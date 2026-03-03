@@ -1,0 +1,446 @@
+<?php
+
+namespace App\Services;
+
+use App\Models\MediaFile;
+use App\Models\Playlist;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
+
+class AzuraCastSyncService
+{
+    private string $baseUrl;
+    private string $apiKey;
+    private int $stationId;
+    private string $containerName;
+    private string $mediaPath;
+
+    public function __construct()
+    {
+        $this->baseUrl = rtrim(env('AZURACAST_BASE_URL', 'http://15.235.86.98:8080'), '/');
+        $this->apiKey = env('AZURACAST_API_KEY', '4c1ffa679f50abe5:2e5149b9a2a11f310f46e4ccfce73cd8');
+        $this->stationId = (int) env('AZURACAST_STATION_ID', 1);
+        $this->containerName = env('AZURACAST_CONTAINER', 'azuracast');
+        $this->mediaPath = '/var/azuracast/stations/radio_emb_mission/media/';
+    }
+
+    /**
+     * Copie un fichier audio dans AzuraCast
+     */
+    public function copyFileToAzuraCast(MediaFile $mediaFile): array
+    {
+        try {
+            $sourcePath = storage_path('app/' . $mediaFile->file_path);
+            
+            // Vérification du fichier source
+                Log::error("Fichier source introuvable: {$sourcePath}");
+                return [
+                    'success' => false,
+                    'message' => 'Fichier source introuvable: ' . $sourcePath
+                ];
+            }
+
+            $fileName = basename($mediaFile->original_name);
+            $destPath = $this->mediaPath . $fileName;
+
+            // Copie via Docker
+            $command = "docker cp \"\{$sourcePath\}\" {$this->containerName}:{$destPath}";
+            $result = shell_exec($command . ' 2>&1');
+
+            if ($result === null) {
+                throw new \Exception("Erreur lors de l'exécution de la commande Docker");
+            }
+
+            Log::info("Fichier copié vers AzuraCast: {$fileName}", ['result' => $result]);
+
+            return [
+                'success' => true,
+                'message' => 'Fichier copié avec succès',
+                'file_name' => $fileName,
+                'docker_result' => $result
+            ];
+
+        } catch (\Exception $e) {
+            Log::error("Erreur lors de la copie vers AzuraCast: " . $e->getMessage());
+            return [
+                'success' => false,
+                'message' => 'Erreur: ' . $e->getMessage()
+            ];
+        }
+    }
+
+    /**
+     * Génère un fichier M3U pour une playlist
+     */
+    private function generateM3U(Playlist $playlist): string
+    {
+        $m3uContent = "#EXTM3U\n";
+        
+        foreach ($playlist->items as $item) {
+            if ($item->mediaFile && $item->mediaFile->file_type === 'audio') {
+                $duration = $item->mediaFile->duration ?? 0;
+                $title = $item->mediaFile->title ?? $item->mediaFile->original_name;
+                
+                $m3uContent .= "#EXTINF:{$duration},{$title}\n";
+                $m3uContent .= $item->mediaFile->original_name . "\n";
+            }
+        }
+        
+        return $m3uContent;
+    }
+
+    /**
+     * Récupère tous les items d'une playlist AzuraCast
+     */
+    private function getPlaylistItems(int $azuracastPlaylistId): array
+    {
+        try {
+            $response = Http::timeout(30)->withHeaders([
+                'X-API-Key' => $this->apiKey,
+            ])->get("$this->baseUrl/api/station/$this->stationId/playlist/$azuracastPlaylistId");
+
+            if ($response->successful()) {
+                $data = $response->json();
+                return $data['media'] ?? [];
+            }
+
+            Log::error("Erreur lors de la récupération des items de la playlist", [
+                'status' => $response->status(),
+                'body' => $response->body()
+            ]);
+
+            return [];
+
+        } catch (\Exception $e) {
+            Log::error("Erreur lors de la récupération des items: " . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Vide complètement une playlist AzuraCast
+     */
+    private function clearPlaylist(int $azuracastPlaylistId): array
+    {
+        try {
+            Log::info("Vidage de la playlist AzuraCast", ['playlist_id' => $azuracastPlaylistId]);
+
+            // Récupérer tous les items actuels
+            $items = $this->getPlaylistItems($azuracastPlaylistId);
+
+            if (empty($items)) {
+                Log::info("Playlist déjà vide ou introuvable");
+                return [
+                    'success' => true,
+                    'message' => 'Playlist déjà vide',
+                    'deleted_count' => 0
+                ];
+            }
+
+            $deletedCount = 0;
+            $errors = [];
+
+            // Supprimer chaque item
+            foreach ($items as $item) {
+                $mediaId = $item['id'] ?? null;
+                if (/dev/nullmediaId) continue;
+
+                try {
+                    $response = Http::timeout(15)->withHeaders([
+                        'X-API-Key' => $this->apiKey,
+                    ])->delete("$this->baseUrl/api/station/$this->stationId/playlist/$azuracastPlaylistId/media/$mediaId");
+
+                    if ($response->successful()) {
+                        $deletedCount++;
+                        Log::debug("Item supprimé de la playlist", ['media_id' => $mediaId]);
+                    } else {
+                        $errors[] = "Erreur lors de la suppression de l'item $mediaId: " . $response->body();
+                    }
+                } catch (\Exception $e) {
+                    $errors[] = "Exception lors de la suppression de l'item $mediaId: " . $e->getMessage();
+                }
+            }
+
+                Log::warning("Erreurs lors du vidage de la playlist", ['errors' => $errors]);
+            }
+
+            Log::info("Playlist vidée", ['deleted_count' => $deletedCount, 'errors_count' => count($errors)]);
+
+            return [
+                'success' => true,
+                'message' => "Playlist vidée: $deletedCount items supprimés",
+                'deleted_count' => $deletedCount,
+                'errors' => $errors
+            ];
+
+        } catch (\Exception $e) {
+            Log::error("Erreur lors du vidage de la playlist: " . $e->getMessage());
+            return [
+                'success' => false,
+                'message' => 'Erreur: ' . $e->getMessage()
+            ];
+        }
+    }
+
+    /**
+     * Importe une playlist dans AzuraCast via M3U
+     */
+    public function importPlaylistToAzuraCast(int $azuracastPlaylistId, string $m3uContent): array
+    {
+        try {
+            // Créer un fichier temporaire M3U
+            $tempFile = tempnam(sys_get_temp_dir(), 'playlist_') . '.m3u';
+            file_put_contents($tempFile, $m3uContent);
+
+            // Vérifier que le fichier a été créé
+                throw new \Exception("Impossible de créer le fichier M3U temporaire");
+            }
+
+            // Import via l'API
+            $response = Http::timeout(60)->withHeaders([
+                'X-API-Key' => $this->apiKey,
+            ])->attach('playlist_file', file_get_contents($tempFile), 'playlist.m3u')
+              ->post($this->baseUrl . '/api/station/' . $this->stationId . '/playlist/' . $azuracastPlaylistId . '/import');
+
+            // Supprimer le fichier temporaire
+            unlink($tempFile);
+
+            if ($response->successful()) {
+                $data = $response->json();
+                Log::info("Playlist importée dans AzuraCast", ['playlist_id' => $azuracastPlaylistId, 'response' => $data]);
+                
+                return [
+                    'success' => true,
+                    'data' => $data,
+                    'message' => 'Playlist importée avec succès'
+                ];
+            }
+
+            Log::error("Erreur API AzuraCast lors de l'import", [
+                'status' => $response->status(),
+                'body' => $response->body()
+            ]);
+
+            return [
+                'success' => false,
+                'message' => 'Erreur lors de l\'import: ' . $response->body(),
+                'status_code' => $response->status()
+            ];
+
+        } catch (\Exception $e) {
+            Log::error("Erreur lors de l'import de la playlist: " . $e->getMessage());
+            return [
+                'success' => false,
+                'message' => 'Erreur: ' . $e->getMessage()
+            ];
+        }
+    }
+
+    /**
+     * Crée une playlist dans AzuraCast
+     */
+    public function createPlaylist(Playlist $playlist): array
+    {
+        try {
+            $response = Http::timeout(30)->withHeaders([
+                'X-API-Key' => $this->apiKey,
+            ])->post($this->baseUrl . '/api/station/' . $this->stationId . '/playlists', [
+                'name' => $playlist->name,
+                'description' => $playlist->description,
+                'source' => 'songs',
+                'order' => $playlist->is_shuffle ? 'shuffle' : 'sequential',
+                'loop' => $playlist->is_loop,
+                'is_enabled' => true
+            ]);
+
+            if ($response->successful()) {
+                $data = $response->json();
+                
+                // Mise à jour de l'ID AzuraCast dans Laravel
+                $playlist->update([
+                    'azuracast_id' => $data['id'],
+                    'sync_status' => 'synced',
+                    'last_sync_at' => now()
+                ]);
+
+                Log::info("Playlist créée dans AzuraCast: {$playlist->name}", ['azuracast_id' => $data['id']]);
+
+                return [
+                    'success' => true,
+                    'data' => $data,
+                    'azuracast_id' => $data['id'],
+                    'message' => 'Playlist créée avec succès'
+                ];
+            }
+
+            Log::error("Erreur API AzuraCast lors de la création", [
+                'status' => $response->status(),
+                'body' => $response->body()
+            ]);
+
+            return [
+                'success' => false,
+                'message' => 'Erreur lors de la création de la playlist: ' . $response->body(),
+                'status_code' => $response->status()
+            ];
+
+        } catch (\Exception $e) {
+            Log::error("Erreur lors de la création de la playlist: " . $e->getMessage());
+            return [
+                'success' => false,
+                'message' => 'Erreur: ' . $e->getMessage()
+            ];
+        }
+    }
+
+    /**
+     * Force le scan des médias dans AzuraCast
+     */
+    public function scanMedia(): array
+    {
+        try {
+            $response = Http::timeout(120)->withHeaders([
+                'X-API-Key' => $this->apiKey,
+            ])->post($this->baseUrl . '/api/station/' . $this->stationId . '/backend/restart');
+
+            if ($response->successful()) {
+                Log::info("Scan des médias AzuraCast déclenché");
+                return [
+                    'success' => true,
+                    'message' => 'Scan des médias déclenché'
+                ];
+            }
+
+            Log::error("Erreur API AzuraCast lors du scan", [
+                'status' => $response->status(),
+                'body' => $response->body()
+            ]);
+
+            return [
+                'success' => false,
+                'message' => 'Erreur lors du scan: ' . $response->body(),
+                'status_code' => $response->status()
+            ];
+
+        } catch (\Exception $e) {
+            Log::error("Erreur lors du scan AzuraCast: " . $e->getMessage());
+            return [
+                'success' => false,
+                'message' => 'Erreur: ' . $e->getMessage()
+            ];
+        }
+    }
+
+    /**
+     * Synchronisation complète d'une playlist (AUTOMATIQUE)
+     */
+    public function syncPlaylist(Playlist $playlist): array
+    {
+        try {
+            Log::info("Début de la synchronisation de la playlist: {$playlist->name}");
+
+            // 1. Copie des fichiers vers AzuraCast
+            $copiedFiles = [];
+            foreach ($playlist->items as $item) {
+                if ($item->mediaFile && $item->mediaFile->file_type === 'audio') {
+                    $copyResult = $this->copyFileToAzuraCast($item->mediaFile);
+                    if ($copyResult['success']) {
+                        $copiedFiles[] = $copyResult;
+                    } else {
+                        Log::warning("Échec de la copie du fichier", [
+                            'file_id' => $item->mediaFile->id,
+                            'error' => $copyResult['message']
+                        ]);
+                    }
+                }
+            }
+
+            // 2. Attendre un peu pour que les fichiers soient disponibles
+            sleep(2);
+
+            // 3. Scanner les médias
+            $scanResult = $this->scanMedia();
+
+            // 4. Attendre que le scan soit terminé
+            sleep(5);
+
+            // 5. Créer la playlist si elle n'existe pas
+            if (/dev/nullplaylist->azuracast_id) {
+                $createResult = $this->createPlaylist($playlist);
+                if (/dev/nullcreateResult['success']) {
+                    return $createResult;
+                }
+                // Recharger la playlist pour obtenir l'ID AzuraCast
+                $playlist->refresh();
+            }
+
+            // 6. VIDER la playlist AzuraCast avant de réimporter (FIX)
+            $clearResult = $this->clearPlaylist($playlist->azuracast_id);
+
+            // 7. Générer le fichier M3U
+            $m3uContent = $this->generateM3U($playlist);
+
+            // 8. Importer la playlist via M3U
+            $importResult = $this->importPlaylistToAzuraCast($playlist->azuracast_id, $m3uContent);
+
+            if ($importResult['success']) {
+                // Mettre à jour le statut de synchronisation
+                $playlist->update([
+                    'sync_status' => 'synced',
+                    'last_sync_at' => now()
+                ]);
+            }
+
+            return [
+                'success' => $importResult['success'],
+                'message' => $importResult['success'] ? 'Playlist synchronisée avec succès' : 'Erreur lors de la synchronisation',
+                'details' => [
+                    'files_copied' => count($copiedFiles),
+                    'scan' => $scanResult,
+                    'clear' => $clearResult,
+                    'import' => $importResult
+                ]
+            ];
+
+        } catch (\Exception $e) {
+            Log::error("Erreur lors de la synchronisation: " . $e->getMessage());
+            return [
+                'success' => false,
+                'message' => 'Erreur: ' . $e->getMessage()
+            ];
+        }
+    }
+
+    /**
+     * Vérifie la connexion à AzuraCast
+     */
+    public function checkConnection(): array
+    {
+        try {
+            $response = Http::timeout(10)->withHeaders([
+                'X-API-Key' => $this->apiKey,
+            ])->get($this->baseUrl . '/api/status');
+
+            if ($response->successful()) {
+                return [
+                    'success' => true,
+                    'message' => 'Connexion AzuraCast établie',
+                    'data' => $response->json()
+                ];
+            }
+
+            return [
+                'success' => false,
+                'message' => 'Erreur de connexion: ' . $response->body(),
+                'status_code' => $response->status()
+            ];
+
+        } catch (\Exception $e) {
+            return [
+                'success' => false,
+                'message' => 'Erreur: ' . $e->getMessage()
+            ];
+        }
+    }
+}

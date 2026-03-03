@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <!--
+    If you are serving your web app in a path other than the root, change the
+    href value below to reflect the base path you are serving from.
+
+    The path provided below has to start and end with a slash "/" in order for
+    it to work correctly.
+
+    For more details:
+    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
+
+    This is a placeholder for base href that will be replaced by the value of
+    the `--base-href` argument provided to `flutter build`.
+  -->
+  <base href="$FLUTTER_BASE_HREF">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="Tableau de bord EMB-MISSION pour la gestion de la WebTV et WebRadio. Gérez vos diffusions en direct et vos contenus multimédias.">
+  <meta name="keywords" content="EMB-MISSION, WebTV, WebRadio, diffusion, live, streaming, dashboard">
+  <meta name="author" content="EMB-MISSION">
+
+  <!-- iOS meta tags & icons -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="EMB-MISSION">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="favicon.png"/>
+  <link rel="shortcut icon" type="image/png" href="favicon.png"/>
+  
+  <!-- Laravel Echo & Pusher JS pour WebSocket -->
+  <script src="https://cdn.jsdelivr.net/npm/pusher-js@8.4.0/dist/web/pusher.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/laravel-echo@1.16.1/dist/echo.iife.js"></script>
+  
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.10.9/shaka-player.compiled.min.js"></script>
+  <script>
+    window.createShakaPlayer = function(videoElement, sourceUrl, options) {
+      if (!window.shaka || !window.shaka.Player) {
+        console.warn('Shaka Player non disponible, fallback natif utilisé.');
+        return null;
+      }
+
+      try {
+        window.shaka.polyfill.installAll();
+      } catch (error) {
+        console.warn('Impossible d\'installer les polyfills Shaka.', error);
+      }
+
+      if (!window.shaka.Player.isBrowserSupported()) {
+        console.warn('Navigateur non supporté par Shaka Player, fallback natif utilisé.');
+        return null;
+      }
+
+      const player = new window.shaka.Player(videoElement);
+      const configuration = Object.assign({
+        streaming: {
+          bufferingGoal: 50,
+          rebufferingGoal: 12,
+          lowLatencyMode: false,
+          retryParameters: {
+            maxAttempts: 4,
+            baseDelay: 1000,
+          },
+        },
+        manifest: {
+          retryParameters: {
+            maxAttempts: 4,
+            baseDelay: 1000,
+          },
+        },
+      }, (options && options.config) || {});
+
+      try {
+        player.configure(configuration);
+      } catch (error) {
+        console.warn('Configuration Shaka invalide, fallback natif utilisé.', error);
+        player.destroy().catch(() => {});
+        return null;
+      }
+
+      if (options && options.drm) {
+        try {
+          player.configure({ drm: options.drm });
+        } catch (error) {
+          console.warn('Configuration DRM Shaka invalide.', error);
+        }
+      }
+
+      const cleanupTasks = [];
+
+      const errorListener = (event) => {
+        console.error('Erreur Shaka Player:', event.detail);
+      };
+      player.addEventListener('error', errorListener);
+      cleanupTasks.push(() => {
+        player.removeEventListener('error', errorListener);
+      });
+
+      let lastCatchupTs = 0;
+      const MIN_CATCHUP_INTERVAL_MS = 4000;
+
+      const catchUpToLive = (reason) => {
+        if (!player.isLive()) {
+          return;
+        }
+        const now = Date.now();
+        if (now - lastCatchupTs < MIN_CATCHUP_INTERVAL_MS) {
+          return;
+        }
+        try {
+          const seekRange = typeof player.seekRange === 'function' ? player.seekRange() : null;
+          if (seekRange && Number.isFinite(seekRange.end)) {
+            const liveEdge = seekRange.end;
+            const currentTime = videoElement.currentTime;
+            const lag = liveEdge - currentTime;
+            if (lag > 9) {
+              const safeTarget = Math.max(seekRange.start ?? 0, liveEdge - 4);
+              console.warn(`Rattrapage (${reason}) retard ${lag.toFixed(1)}s -> ${safeTarget.toFixed(1)}s`);
+              videoElement.currentTime = safeTarget;
+              lastCatchupTs = now;
+            }
+          }
+        } catch (error) {
+          console.warn('Impossible d\'ajuster la position:', error);
+        }
+      };
+
+      const bufferingListener = (event) => {
+        const isBuffering = event.buffering;
+        console.log('Shaka buffering:', isBuffering);
+        if (!isBuffering) {
+          catchUpToLive('buffering');
+        }
+      };
+      player.addEventListener('buffering', bufferingListener);
+      cleanupTasks.push(() => {
+        player.removeEventListener('buffering', bufferingListener);
+      });
+
+      const edgeMonitor = setInterval(() => {
+        if (!videoElement.paused && !videoElement.seeking) {
+          catchUpToLive('monitor');
+        }
+      }, 5000);
+      cleanupTasks.push(() => clearInterval(edgeMonitor));
+
+      player.load(sourceUrl).then(() => {
+        if (!videoElement.paused && !videoElement.autoplay) {
+          return;
+        }
+        if (options && options.autoPlay === false) {
+          return;
+        }
+        if (videoElement.paused) {
+          videoElement.play().catch((error) => {
+            console.warn('Autoplay bloqué après chargement Shaka:', error);
+          });
+        }
+      }).catch((error) => {
+        console.error('Impossible de charger la source avec Shaka:', error);
+        if (!videoElement.src) {
+          videoElement.src = sourceUrl;
+          videoElement.load();
+        }
+      });
+
+      player.__cleanupTasks = cleanupTasks;
+      return player;
+    };
+
+    window.destroyShakaPlayer = function(playerInstance) {
+      if (playerInstance && Array.isArray(playerInstance.__cleanupTasks)) {
+        playerInstance.__cleanupTasks.forEach((fn) => {
+          try {
+            fn();
+          } catch (error) {
+            console.warn('Erreur lors d\'un nettoyage Shaka:', error);
+          }
+        });
+        playerInstance.__cleanupTasks = [];
+      }
+      if (playerInstance && typeof playerInstance.destroy === 'function') {
+        playerInstance.destroy().catch((error) => {
+          console.warn('Erreur lors de la destruction de Shaka Player:', error);
+        });
+      }
+    };
+  </script>
+  
+  <script>
+    // ✅ Configuration Laravel Echo pour Reverb
+    // Détection automatique de l'environnement (local vs production)
+    window.initLaravelEcho = function(reverbKey) {
+      if (!window.Pusher || !window.Echo) {
+        console.warn('⚠️ Pusher ou Echo non disponible');
+        return null;
+      }
+      
+      // Détecter si on est en développement local (Flutter Web) ou en production
+      const isLocalDev = window.location.hostname === 'localhost' || 
+                        window.location.hostname === '127.0.0.1' ||
+                        window.location.hostname.startsWith('192.168.') ||
+                        window.location.hostname.startsWith('10.') ||
+                        (window.location.port !== '' && window.location.port !== '443' && window.location.port !== '80');
+      
+      // Configuration WebSocket selon l'environnement
+      // En local, on se connecte TOUJOURS au serveur de production (tv.embmission.com)
+      const wsHost = isLocalDev ? 'tv.embmission.com' : window.location.hostname;
+      const wsPort = 8444;
+      const wssPort = 8444;
+      // Toujours utiliser TLS/WSS si on se connecte à tv.embmission.com (production)
+      const useTLS = wsHost === 'tv.embmission.com';
+      
+      // Configuration Echo avec hostname forcé pour le développement local
+      const echoConfig = {
+        broadcaster: 'reverb',
+        key: reverbKey || 'emb-mission-key',
+        wsHost: wsHost,
+        wsPort: wsPort,
+        wssPort: wssPort,
+        forceTLS: useTLS,
+        enabledTransports: useTLS ? ['wss'] : ['ws', 'wss'],
+        disableStats: true,
+        cluster: '',
+        // ✅ Configuration spécifique pour Reverb
+        authEndpoint: isLocalDev ? 'https://tv.embmission.com/broadcasting/auth' : '/broadcasting/auth',
+        auth: {
+          headers: {
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '',
+          }
+        }
+      };
+      
+      try {
+        window.Echo = new window.Echo(echoConfig);
+        console.log('📡 Laravel Echo initialisé pour Reverb', {
+          environment: isLocalDev ? 'local' : 'production',
+          wsHost: wsHost,
+          wsPort: wsPort,
+          useTLS: useTLS
+        });
+        return window.Echo;
+      } catch (error) {
+        console.error('❌ Erreur initialisation Laravel Echo:', error);
+        return null;
+      }
+    };
+  </script>
+
+  <title>EMB-MISSION Dashboard</title>
+  <link rel="manifest" href="manifest.json">
+</head>
+<body>
+  <script>
+    // Empêcher le navigateur d'ouvrir les fichiers glissés-déposés
+    // SAUF sur les zones de drop Flutter (qui ont l'attribut flt-dropzone)
+    window.addEventListener('dragover', function(e) {
+      // Vérifier si l'élément cible est une zone de drop Flutter
+      var target = e.target;
+      var isDropzone = false;
+      
+      while (target && target !== document.body) {
+        if (target.getAttribute && (
+            target.getAttribute('flt-dropzone') !== null ||
+            target.classList.contains('dropzone')
+        )) {
+          isDropzone = true;
+          break;
+        }
+        target = target.parentElement;
+      }
+      
+      // Empêcher seulement si ce n'est PAS une zone de drop
+      if (!isDropzone) {
+        e.preventDefault();
+        e.stopPropagation();
+      } else {
+        // Laisser passer mais empêcher le comportement par défaut du navigateur
+        e.preventDefault();
+      }
+    }, false);
+    
+    window.addEventListener('drop', function(e) {
+      var target = e.target;
+      var isDropzone = false;
+      
+      while (target && target !== document.body) {
+        if (target.getAttribute && (
+            target.getAttribute('flt-dropzone') !== null ||
+            target.classList.contains('dropzone')
+        )) {
+          isDropzone = true;
+          break;
+        }
+        target = target.parentElement;
+      }
+      
+      if (!isDropzone) {
+        e.preventDefault();
+        e.stopPropagation();
+      } else {
+        // Laisser Flutter gérer mais empêcher l'ouverture du fichier
+        e.preventDefault();
+      }
+    }, false);
+    
+    window.addEventListener('dragenter', function(e) {
+      e.preventDefault();
+    }, false);
+  </script>
+  <script>
+    {{flutter_bootstrap_js}}
+  </script>
+</body>
+</html>

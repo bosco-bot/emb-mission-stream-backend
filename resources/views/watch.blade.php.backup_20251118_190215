@@ -1,0 +1,1015 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EMB Mission TV - En Direct</title>
+    
+    <!-- Google tag (gtag.js) -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-R78T23LM6W"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'G-R78T23LM6W');
+    </script>
+    
+    <link rel="icon" type="image/png" href="/favicon.png">
+    <link rel="apple-touch-icon" href="/icons/Icon-192.png">
+    <meta name="description" content="Regardez EMB Mission TV en direct et en replay">
+
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #000; font-family: Arial, sans-serif; overflow: hidden; }
+        #player-container { width: 100vw; height: 100vh; position: relative; }
+        
+        #player, #html5-player { width: 100%; height: 100%; border: none; }
+        #html5-player { object-fit: contain; display: none; background: #000; }
+        
+        #loading, #error {
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            color: white; z-index: 10; text-align: center;
+        }
+        #error { color: #ff6b6b; display: none; }
+        
+        #sync-info {
+            position: absolute; top: 10px; right: 10px;
+            background: rgba(0,0,0,0.8); color: white;
+            padding: 8px 12px; border-radius: 8px; font-size: 13px;
+            z-index: 15; display: none; display: none !important; border-left: 3px solid #4CAF50;
+        }
+        
+        /* 🚀 NOUVEAU : Indicateur de performance */
+        #perf-info {
+            position: absolute; top: 10px; left: 10px;
+            background: rgba(0,0,0,0.7); color: #4CAF50;
+            padding: 6px 10px; border-radius: 6px; font-size: 11px;
+            z-index: 15; display: none; display: none !important; font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <div id="player-container">
+        <div id="loading">⚡ Chargement ultra-rapide...</div>
+        <div id="error">
+            <p>Aucun contenu disponible pour le moment.</p>
+            <p>Veuillez réessayer plus tard.</p>
+        </div>
+        <div id="sync-info"></div>
+        <div id="perf-info"></div>
+        <iframe id="player" src="" allowfullscreen style="display: none;"></iframe>
+        <video id="html5-player" controls autoplay playsinline muted preload="metadata" style="display: none;"></video>
+    </div>
+    
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.14/dist/hls.min.js"
+            integrity="sha256-wnv8kVqHnAKznyXXBcI2U5Oly2U+ovyNRzwv811mHGc="
+            crossorigin="anonymous"></script>
+    <script>
+        // 🚀 VARIABLES OPTIMISÉES
+        const API = "https://tv.embmission.com/api/webtv-auto-playlist/current-url";
+        const iframe = document.getElementById("player");
+        const video = document.getElementById("html5-player");
+        const loading = document.getElementById("loading");
+        const errorBox = document.getElementById("error");
+        const syncInfo = document.getElementById("sync-info");
+        const perfInfo = document.getElementById("perf-info");
+        const defaultErrorHTML = errorBox.innerHTML;
+        
+        let currentUrl = null, mode = null, poll = null, sync = null;
+        let lastData = null, playPromise = null, lastStreamId = null;
+        let preloadedVideos = new Map(); // 🎯 Cache de preloading
+        let performanceMetrics = { apiCalls: 0, loadTimes: [] };
+        let freezeInterval = null, lastProgressTime = 0; // 🛡️ Surveillance du freeze
+        let modeStableSince = null; // ✅ Timestamp de la dernière stabilité du mode
+        let consecutiveStablePolls = 0; // ✅ Nombre de polls consécutifs sans changement
+        const STABLE_MODE_THRESHOLD = 3; // ✅ Après 3 polls stables, réduire la fréquence
+        const STALL_WINDOW_MS = 15000;
+        const STALL_LIMIT = 3;
+        let stallCount = 0;
+        let stallWindowStart = 0;
+        let isBuffering = false;
+        const supportsNativeHls = video.canPlayType('application/vnd.apple.mpegurl');
+        let hlsInstance = null;
+        let isLiveStream = false;
+        let errorRetry = null;
+        let liveManifestRetryCount = 0; // ✅ Compteur de tentatives pour le manifest live
+        const MAX_LIVE_MANIFEST_RETRIES = 5; // ✅ Maximum 5 tentatives avant de considérer le live comme indisponible
+        
+        // 🚀 FONCTION PRINCIPALE OPTIMISÉE
+        async function getData() {
+            const startTime = performance.now();
+            
+            try {
+                const res = await fetch(API);
+                const json = await res.json();
+                
+                // Métriques de performance
+                const apiTime = performance.now() - startTime;
+                performanceMetrics.apiCalls++;
+                performanceMetrics.loadTimes.push(apiTime);
+                updatePerfInfo(apiTime);
+                
+                if (!json.success || !json.data) return showError();
+                
+                const d = json.data.data || json.data; // Compatibilité structure
+
+                if (d.mode === 'paused') {
+                    showPaused(d.message ?? "Diffusion en pause");
+                    return;
+                }
+                
+                // ✅ Protection contre les bascules VoD/Live répétées
+                // Utiliser d.mode explicitement si disponible, sinon se baser sur stream_id/url
+                const backendMode = d.mode || (d.stream_id ? 'live' : (d.url ? 'vod' : null));
+                const previousMode = mode;
+                const modeChanged = previousMode !== backendMode;
+                
+                // ✅ Détecter la stabilité du mode
+                if (modeChanged) {
+                    // Mode a changé - réinitialiser le compteur de stabilité
+                    consecutiveStablePolls = 0;
+                    modeStableSince = Date.now();
+                } else {
+                    // Mode stable - incrémenter le compteur
+                    consecutiveStablePolls++;
+                }
+                
+                if (backendMode === 'live' || d.stream_id) {
+                    // Mode live : vérifier si le statut a vraiment changé avant d'appeler showLive()
+                    const liveUrl = d.url || `https://tv.embmission.com/hls/streams/${d.stream_id}.m3u8`;
+                    
+                    // ✅ PROTECTION : Ne recharger que si le statut a changé ou si c'est un nouveau stream
+                    if (mode === 'live' && lastStreamId === d.stream_id && currentUrl === liveUrl) {
+                        // Même statut live, même stream, même URL - AUCUN rechargement nécessaire
+                        console.log("📺 Live stable - Pas de rechargement (statut inchangé)");
+                        lastData = d; // Mettre à jour lastData pour garder les infos à jour
+                        loading.style.display = "none";
+                        errorBox.style.display = "none";
+                        managePolling(false); // Mode non changé
+                        return; // Sortir sans recharger
+                    }
+                    
+                    // Statut a changé ou nouveau stream - appeler showLive()
+                    showLive(liveUrl, d);
+                } else if (backendMode === 'vod' || d.url) {
+                    // Mode VoD : ne basculer que si on n'est PAS déjà en live
+                    // ou si le backend confirme explicitement VoD (d.mode === 'vod')
+                    if (mode === 'live' && backendMode !== 'vod') {
+                        // On est en live mais le backend ne retourne pas stream_id temporairement
+                        // Attendre le prochain polling plutôt que de basculer vers VoD
+                        console.log("📺 Live toujours actif (backend temporairement sans stream_id) - maintien du live");
+                        lastData = d; // ✅ Mettre à jour lastData même si on ne bascule pas
+                        return;
+                    }
+                    
+                    // ✅ PROTECTION : Ne recharger que si le statut a changé ou si c'est une nouvelle vidéo
+                    const vodUrl = d.url || d.stream_url;
+                    if (mode === 'vod' && currentUrl === vodUrl && lastData && lastData.item_id === d.item_id) {
+                        // Même statut VoD, même URL, même vidéo - AUCUN rechargement nécessaire
+                        console.log("📡 VoD stable - Pas de rechargement (statut inchangé)");
+                        lastData = d; // Mettre à jour lastData pour garder les infos à jour
+                        loading.style.display = "none";
+                        errorBox.style.display = "none";
+                        managePolling(false); // Mode non changé
+                        return; // Sortir sans recharger
+                    }
+                    
+                    // Statut a changé ou nouvelle vidéo - appeler showVODOptimized()
+                    showVODOptimized(d.url, d);
+                } else {
+                    showError();
+                }
+                
+                loading.style.display = "none";
+                errorBox.style.display = "none";
+                managePolling(modeChanged);
+                
+            } catch (error) {
+                console.error("❌ Erreur API:", error);
+                showError();
+            }
+        }
+
+        function applySnapshot(snapshot) {
+            if (!snapshot || typeof snapshot !== "object") {
+                showError();
+                return;
+            }
+
+            const modeSnapshot = snapshot.mode;
+
+            if (modeSnapshot === "paused") {
+                showPaused(snapshot.message ?? "Diffusion en pause");
+                currentUrl = null;
+                return;
+            }
+
+            if (modeSnapshot === "error") {
+                showError(snapshot.message ?? "Statut indisponible");
+                currentUrl = null;
+                return;
+            }
+
+            if (modeSnapshot === "live") {
+                const liveUrl = snapshot.url || snapshot.stream_url || "https://tv.embmission.com/hls/streams/live_transcoded.m3u8";
+                showLive(liveUrl, snapshot);
+                return;
+            }
+
+            if (modeSnapshot === "vod") {
+                const vodUrl = snapshot.url || snapshot.stream_url;
+                if (vodUrl) {
+                    showVODOptimized(vodUrl, snapshot);
+                    return;
+                }
+            }
+
+            showError(snapshot.message ?? "Statut inconnu");
+        }
+
+        function stopFreezeWatchdog() {
+            if (freezeInterval) {
+                clearInterval(freezeInterval);
+                freezeInterval = null;
+            }
+        }
+
+        function requestNextVideo(reason = "") {
+            console.log(`⏭️ Transition forcée${reason ? ` (${reason})` : ""}`);
+            stopFreezeWatchdog();
+            currentUrl = null;
+            getData();
+        }
+
+        function startFreezeWatchdog() {
+            stopFreezeWatchdog();
+            lastProgressTime = video.currentTime;
+            isBuffering = false;
+
+            freezeInterval = setInterval(() => {
+                if (mode !== 'vod' || video.paused || !video.src) return;
+
+                const currentTime = video.currentTime;
+                if (currentTime === lastProgressTime && currentTime > 0 && video.readyState >= 2) {
+                    console.warn("⚠️ Détection de freeze - tentative de récupération");
+
+                    if (lastData && typeof lastData.duration === "number" && currentTime >= lastData.duration - 1) {
+                        requestNextVideo("freeze at end");
+                        return;
+                    }
+
+                    video.currentTime = currentTime + 0.1;
+                    startPlaybackOptimized();
+                }
+
+                lastProgressTime = currentTime;
+            }, 3000);
+        }
+
+        function resetFreezeDetection() {
+            lastProgressTime = video.currentTime;
+        }
+
+        function resetStallMonitor() {
+            stallCount = 0;
+            stallWindowStart = 0;
+            isBuffering = false;
+        }
+
+        function registerStall(eventName) {
+            const now = Date.now();
+
+            if (!stallWindowStart || now - stallWindowStart > STALL_WINDOW_MS) {
+                stallWindowStart = now;
+                stallCount = 0;
+            }
+
+            stallCount += 1;
+
+            if (stallCount >= STALL_LIMIT) {
+                console.warn(`⛔ Trop de blocages (${eventName}) - passage forcé`);
+                requestNextVideo(`${eventName} overflow`);
+                resetStallMonitor();
+                return true;
+            }
+
+            return false;
+        }
+
+        function detachHls() {
+            if (hlsInstance) {
+                try {
+                    hlsInstance.detachMedia();
+                    hlsInstance.destroy();
+                } catch (e) {
+                    console.warn("⚠️ hls.js destroy:", e);
+                }
+                hlsInstance = null;
+            }
+        }
+
+        function resetVideoElement() {
+            detachHls();
+            isLiveStream = false;
+            video.autoplay = false;
+            try {
+                video.pause();
+            } catch (_) {}
+            video.removeAttribute('src');
+            video.load();
+        }
+
+        function loadVideoSource(url, options = {}) {
+            const { isLive = false } = options;
+            resetVideoElement();
+            isLiveStream = isLive;
+
+            if (!url) {
+                console.warn("⚠️ URL vidéo manquante");
+                return;
+            }
+
+            const isM3u8 = url.includes('.m3u8');
+
+            if ((supportsNativeHls && isM3u8) || !isM3u8) {
+                video.src = url;
+                video.load();
+
+                if (isLive) {
+                    const seekToLiveEdge = () => {
+                        try {
+                            if (video.seekable && video.seekable.length > 0) {
+                                const liveEdge = video.seekable.end(video.seekable.length - 1);
+                                if (Number.isFinite(liveEdge)) {
+                                    const startEdge = video.seekable.start(video.seekable.length - 1);
+                                    const span = liveEdge - startEdge;
+                                    const safetyOffset = span > 10 ? 3 : 0;
+                                    video.currentTime = Math.max(liveEdge - safetyOffset, startEdge);
+                                }
+                            }
+                        } catch (err) {
+                            console.warn("⚠️ Impossible de se caler sur le live (native):", err);
+                        }
+                        video.removeEventListener('loadedmetadata', seekToLiveEdge);
+                    };
+                    video.addEventListener('loadedmetadata', seekToLiveEdge);
+                }
+                return;
+            }
+
+            if (window.Hls && Hls.isSupported()) {
+                hlsInstance = new Hls({
+                    enableWorker: true,
+                    lowLatencyMode: true,
+                    backBufferLength: 90,
+                    liveSyncDurationCount: 3,
+                    liveMaxLatencyDurationCount: 10,
+                });
+
+                if (isLive) {
+                    let liveEdgeApplied = false;
+                    const seekLiveWithHls = (event, data) => {
+                        if (!liveEdgeApplied && data?.details) {
+                            try {
+                                let liveEdge = 0;
+                                if (Number.isFinite(data.details.edge)) {
+                                    liveEdge = data.details.edge;
+                                } else if (Number.isFinite(hlsInstance.liveSyncPosition)) {
+                                    liveEdge = hlsInstance.liveSyncPosition;
+                                } else if (Number.isFinite(data.details.totalduration)) {
+                                    liveEdge = data.details.totalduration;
+                                }
+
+                                if (Number.isFinite(liveEdge) && liveEdge > 0) {
+                                    const safetyOffset = 5;
+                                    video.currentTime = Math.max(liveEdge - safetyOffset, 0);
+                                }
+                            } catch (err) {
+                                console.warn("⚠️ Impossible de se caler sur le live (hls.js):", err);
+                            }
+                            liveEdgeApplied = true;
+                        }
+                    };
+                    hlsInstance.on(Hls.Events.LEVEL_LOADED, seekLiveWithHls);
+                    hlsInstance.on(Hls.Events.DESTROYING, () => {
+                        hlsInstance.off(Hls.Events.LEVEL_LOADED, seekLiveWithHls);
+                    });
+                }
+
+                hlsInstance.loadSource(url);
+                hlsInstance.attachMedia(video);
+                
+                // ✅ Réinitialiser le compteur de tentatives quand le manifest est chargé avec succès
+                hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
+                    if (isLiveStream) {
+                        console.log("✅ Manifest live chargé avec succès - Réinitialisation du compteur");
+                        liveManifestRetryCount = 0;
+                    }
+                });
+                
+                hlsInstance.on(Hls.Events.ERROR, (event, data) => {
+                    // Log détaillé de l'erreur
+                    const errorDetails = {
+                        type: data?.type,
+                        fatal: data?.fatal,
+                        details: data?.details,
+                        url: data?.url,
+                        response: data?.response,
+                        error: data?.error,
+                        message: data?.message
+                    };
+                    console.warn("⚠️ hls.js error", errorDetails);
+                    
+                    // Log spécifique pour les erreurs réseau (404, etc.)
+                    if (data?.type === Hls.ErrorTypes.NETWORK_ERROR) {
+                        const is404 = data?.response?.code === 404;
+                        const isLiveManifest = isLiveStream && data?.url && data.url.includes('.m3u8');
+                        
+                        console.error("🌐 Erreur réseau HLS:", {
+                            url: data?.url,
+                            httpStatus: data?.response?.code,
+                            message: data?.details || data?.message,
+                            isLiveManifest: isLiveManifest,
+                            retryCount: liveManifestRetryCount
+                        });
+                        
+                        // ✅ Gestion spéciale pour les erreurs 404 sur le manifest live
+                        // Le manifest peut ne pas être immédiatement disponible au démarrage du live
+                        if (is404 && isLiveManifest && data?.fatal) {
+                            liveManifestRetryCount++;
+                            
+                            if (liveManifestRetryCount < MAX_LIVE_MANIFEST_RETRIES) {
+                                console.log(`🔄 Manifest live 404 - Tentative ${liveManifestRetryCount}/${MAX_LIVE_MANIFEST_RETRIES} (le manifest peut ne pas être encore prêt)`);
+                                // Attendre un peu avant de réessayer (le manifest peut être en cours de génération)
+                                setTimeout(() => {
+                                    if (hlsInstance && mode === 'live') {
+                                        hlsInstance.startLoad();
+                                    }
+                                }, 2000 * liveManifestRetryCount); // Délai progressif : 2s, 4s, 6s, 8s, 10s
+                                return; // Ne pas traiter comme une erreur fatale pour l'instant
+                            } else {
+                                console.warn(`⚠️ Manifest live 404 après ${MAX_LIVE_MANIFEST_RETRIES} tentatives - Le live n'est probablement pas encore prêt`);
+                                // Après 5 tentatives, considérer que le live n'est pas disponible
+                                // Ne pas basculer vers VoD immédiatement, attendre le prochain polling
+                                liveManifestRetryCount = 0;
+                                // Laisser hls.js gérer l'erreur normalement
+                            }
+                        }
+                    }
+                    
+                    if (data?.fatal) {
+                        switch (data.type) {
+                            case Hls.ErrorTypes.NETWORK_ERROR:
+                                // Ne pas réessayer si c'est déjà une erreur 404 sur le manifest live gérée ci-dessus
+                                if (!(isLiveStream && data?.url && data.url.includes('.m3u8') && data?.response?.code === 404 && liveManifestRetryCount < MAX_LIVE_MANIFEST_RETRIES)) {
+                                    console.log("🔄 Tentative de récupération réseau...");
+                                    hlsInstance.startLoad();
+                                }
+                                break;
+                            case Hls.ErrorTypes.MEDIA_ERROR:
+                                console.log("🔄 Tentative de récupération média...");
+                                hlsInstance.recoverMediaError();
+                                break;
+                            default:
+                                console.error("❌ Erreur fatale HLS - déconnexion", errorDetails);
+                                detachHls();
+                                showError();
+                                break;
+                        }
+                    }
+                });
+            } else {
+                console.warn("⚠️ hls.js non supporté - fallback direct");
+                video.src = url;
+                video.load();
+            }
+        }
+
+        // 🔥 NOUVELLE FONCTION VoD ULTRA-OPTIMISÉE
+        function showVODOptimized(url, d) {
+            const loadStart = performance.now();
+
+            const isFinished = d.is_finished === true || (
+                typeof d.current_time === "number" &&
+                typeof d.duration === "number" &&
+                d.current_time >= d.duration - 0.5
+            );
+
+            if (isFinished) {
+                requestNextVideo(currentUrl === url ? "same media finished" : "api finished flag");
+                return;
+            }
+
+            if (currentUrl !== url) {
+                console.log("🎬 Nouvelle vidéo:", d.item_title);
+
+                const isM3u8 = url.includes('.m3u8');
+
+                if (!isM3u8 && preloadedVideos.has(url)) {
+                    console.log("⚡ Utilisation vidéo preloadée");
+                    resetVideoElement();
+                    video.src = url;
+                    video.load();
+
+                    const targetTime = Number.isFinite(d.current_time) ? Math.max(0, d.current_time) : 0;
+                    const onSeeked = () => {
+                        video.removeEventListener('seeked', onSeeked);
+                        showVideoPlayer();
+                        startPlaybackOptimized();
+                        resetFreezeDetection();
+                    };
+
+                    video.addEventListener('seeked', onSeeked, { once: true });
+                    video.currentTime = targetTime;
+
+                    if (Math.abs(video.currentTime - targetTime) < 0.05) {
+                        onSeeked();
+                    }
+
+                    preloadedVideos.delete(url);
+                } else {
+                    console.log("🔄 Chargement optimisé");
+                    loadVideoSource(url);
+                    video.pause();
+
+                    video.addEventListener('loadeddata', () => {
+                        const loadTime = performance.now() - loadStart;
+                        console.log(`⚡ Vidéo chargée en ${loadTime.toFixed(0)}ms`);
+
+                        if (typeof d.duration === "number" && d.current_time >= d.duration - 0.5) {
+                            requestNextVideo("loaded media already finished");
+                            return;
+                        }
+
+                        const targetTime = Number.isFinite(d.current_time) ? Math.max(0, d.current_time) : 0;
+
+                        const onSeeked = () => {
+                            video.removeEventListener('seeked', onSeeked);
+                            showVideoPlayer();
+                            startPlaybackOptimized();
+                            resetFreezeDetection();
+                        };
+
+                        video.addEventListener('seeked', onSeeked, { once: true });
+                        video.currentTime = targetTime;
+
+                        if (Math.abs(video.currentTime - targetTime) < 0.05) {
+                            onSeeked();
+                        }
+                    }, { once: true });
+                }
+
+                currentUrl = url;
+                mode = "vod";
+
+                preloadNextVideos(d);
+            } else {
+                if (typeof d.duration === "number" && video.currentTime >= d.duration - 1) {
+                    requestNextVideo("player reached duration");
+                    return;
+                }
+
+                const diff = Number.isFinite(video.currentTime) && Number.isFinite(d.current_time)
+                    ? Math.abs(video.currentTime - d.current_time)
+                    : 0;
+                if (Number.isFinite(diff) && diff > 5) {
+                    console.log(`🔄 Resync: ${video.currentTime.toFixed(1)}s → ${d.current_time.toFixed(1)}s`);
+                    const targetTime = Number.isFinite(d.current_time) ? Math.max(0, d.current_time) : 0;
+                    video.currentTime = targetTime;
+                    resetFreezeDetection();
+                }
+            }
+
+            updateSyncInfo(d);
+            lastData = d;
+            resetFreezeDetection();
+            resetStallMonitor();
+            startContinuousSync();
+            startFreezeWatchdog();
+        }
+
+        // 🎯 PRELOADING INTELLIGENT DES PROCHAINES VIDÉOS        // 🎯 PRELOADING INTELLIGENT DES PROCHAINES VIDÉOS
+        function preloadNextVideos(currentData) {
+            // Si l'API fournit next_items, les utiliser
+            if (currentData.next_items && currentData.next_items.length > 0) {
+                currentData.next_items.forEach((nextItem, index) => {
+                    setTimeout(() => preloadVideo(nextItem.url), index * 1000);
+                });
+            } else {
+                // Sinon, preloader de manière prédictive
+                setTimeout(() => {
+                    fetch(API)
+                        .then(res => res.json())
+                        .then(data => {
+                            if (data.success && data.data) {
+                                const nextData = data.data.data || data.data;
+                                if (nextData.url && nextData.url !== currentUrl) {
+                                    preloadVideo(nextData.url);
+                                }
+                            }
+                        })
+                        .catch(() => {});
+                }, 2000);
+            }
+        }
+        
+        // 🎯 FONCTION DE PRELOADING
+        function preloadVideo(url) {
+            if (!url || url.includes('.m3u8')) {
+                return; // hls.js gère le buffering pour les playlists
+            }
+            if (!preloadedVideos.has(url) && url !== currentUrl) {
+                console.log("🔄 Preloading:", url.split('/').pop());
+                
+                const preloadVideo = document.createElement('video');
+                preloadVideo.src = url;
+                preloadVideo.preload = 'metadata';
+                preloadVideo.muted = true;
+                preloadVideo.style.display = 'none';
+                
+                preloadVideo.addEventListener('loadeddata', () => {
+                    console.log("✅ Preloadé:", url.split('/').pop());
+                    preloadedVideos.set(url, preloadVideo);
+                    
+                    // Nettoyer après 5 minutes
+                    setTimeout(() => {
+                        preloadedVideos.delete(url);
+                        preloadVideo.remove();
+                    }, 300000);
+                });
+                
+                document.body.appendChild(preloadVideo);
+            }
+        }
+        
+        // ⚡ DÉMARRAGE DE LECTURE OPTIMISÉ
+        function startPlaybackOptimized() {
+            // Vérifier l'état de la vidéo avant de jouer
+            if (video.readyState >= 2) { // HAVE_CURRENT_DATA
+                playPromise = video.play();
+                
+                if (playPromise !== undefined) {
+                    playPromise.then(() => {
+                        console.log("▶️ Lecture démarrée");
+                        isBuffering = false;
+                        resetStallMonitor();
+                        resetFreezeDetection();
+                        playPromise = null;
+                    }).catch(error => {
+                        console.log("⚠️ Autoplay:", error.name);
+                        
+                        if (error.name === 'AbortError') {
+                            // Retry plus rapide
+                            setTimeout(() => {
+                                playPromise = video.play();
+                                if (playPromise) {
+                                    playPromise.then(() => {
+                                        console.log("▶️ Lecture redémarrée");
+                                        isBuffering = false;
+                                        resetStallMonitor();
+                                        resetFreezeDetection();
+                                        playPromise = null;
+                                    }).catch(() => playPromise = null);
+                                }
+                            }, 100); // Réduit à 100ms
+                        } else {
+                            playPromise = null;
+                        }
+                    });
+                }
+            } else {
+                // Attendre que la vidéo soit prête
+                video.addEventListener('canplay', () => startPlaybackOptimized(), { once: true });
+            }
+        }
+        
+        // 🎬 AFFICHAGE DU LECTEUR VIDÉO
+        function showVideoPlayer() {
+            iframe.style.display = "none";
+            video.style.display = "block";
+            syncInfo.style.display = "block";
+            perfInfo.style.display = "block";
+        }
+
+        function showLivePlayer() {
+            iframe.style.display = "none";
+            video.style.display = "block";
+            syncInfo.style.display = "none";
+            perfInfo.style.display = "none";
+        }
+        
+        // 📺 FONCTION LIVE ULTRA-PROTÉGÉE
+        function showLive(url, d) {
+            // 🛡️ PROTECTION TRIPLE contre les reconnexions
+            if (currentUrl === url && iframe.style.display === "block" && mode === 'live') {
+                console.log("📺 Live déjà actif - AUCUNE reconnexion (économie bande passante)");
+                return;
+            }
+            
+            // 🔒 Vérifier si c'est vraiment un nouveau stream
+            if (lastStreamId === d.stream_id && mode === 'live') {
+                console.log("📺 Même stream Live - Pas de rechargement");
+                return;
+            }
+            
+            console.log("📺 NOUVELLE connexion Live:", d.stream_id);
+            lastStreamId = d.stream_id;
+            
+            // ✅ Réinitialiser le compteur de tentatives pour le nouveau stream live
+            liveManifestRetryCount = 0;
+            
+            // Nettoyer VoD complètement
+            if (sync) {
+                clearInterval(sync);
+                sync = null;
+            }
+
+            stopFreezeWatchdog();
+            
+            if (playPromise) {
+                playPromise.then(() => video.pause()).catch(() => {});
+            } else {
+                video.pause();
+            }
+            
+            // ✅ Charger directement le live - hls.js gère les retry automatiquement
+            // Ne pas vérifier le manifest avec HEAD car cela crée une boucle VoD/Live
+            // Si le backend dit que le live est actif, on fait confiance et on charge
+            // hls.js va retry automatiquement si le manifest n'est pas encore prêt
+            loadVideoSource(url, { isLive: true });
+            syncInfo.style.display = "none";
+            perfInfo.style.display = "none";
+            video.addEventListener('loadeddata', () => {
+                showLivePlayer();
+                startPlaybackOptimized();
+            }, { once: true });
+
+            currentUrl = url;
+            mode = 'live';
+            lastData = d; // ✅ Mettre à jour lastData pour garder les infos à jour
+
+            console.log("📺 Live connecté - Polling adaptatif (8-10s)");
+        }
+        
+        // 🔄 SYNCHRONISATION CONTINUE OPTIMISÉE
+        function startContinuousSync() {
+            if (sync) clearInterval(sync);
+            
+            sync = setInterval(() => {
+                if (mode !== 'vod' || !lastData) return;
+                
+                const now = Math.floor(Date.now() / 1000);
+                const expected = lastData.current_time + (now - lastData.sync_timestamp);
+                const timeDiff = Math.abs(video.currentTime - expected);
+                const RESYNC_THRESHOLD = 12;
+
+                if (!video.paused && !isBuffering && video.readyState >= 2 && timeDiff > RESYNC_THRESHOLD) {
+                    let safeTarget = expected;
+                    if (typeof lastData.duration === 'number') {
+                        safeTarget = Math.min(expected, Math.max(0, lastData.duration - 0.25));
+                    }
+
+                    safeTarget = Math.max(0, safeTarget);
+                    console.log(`🔄 Resync auto: ${video.currentTime.toFixed(1)}s → ${safeTarget.toFixed(1)}s`);
+                    video.currentTime = safeTarget;
+                }
+            }, 15000);
+        }
+        
+        // 📊 AFFICHAGE DES INFOS DE SYNC
+        function updateSyncInfo(d) {
+            const minutes = Math.floor(d.current_time / 60);
+            const seconds = Math.floor(d.current_time % 60);
+            const totalMinutes = Math.floor(d.duration / 60);
+            const totalSeconds = Math.floor(d.duration % 60);
+            
+            syncInfo.innerHTML = `
+                <strong>📺 ${d.item_title.substring(0, 30)}${d.item_title.length > 30 ? '...' : ''}</strong><br>
+                ⏱️ ${minutes}:${seconds.toString().padStart(2, '0')} / ${totalMinutes}:${totalSeconds.toString().padStart(2, '0')}<br>
+                🔄 <span style="color: #4CAF50;">Synchronisé globalement</span>
+            `;
+        }
+        
+        // 📈 AFFICHAGE DES MÉTRIQUES DE PERFORMANCE
+        function updatePerfInfo(apiTime) {
+            const avgTime = performanceMetrics.loadTimes.reduce((a, b) => a + b, 0) / performanceMetrics.loadTimes.length;
+            const preloadCount = preloadedVideos.size;
+            
+            perfInfo.innerHTML = `
+                API: ${apiTime.toFixed(0)}ms | Avg: ${avgTime.toFixed(0)}ms<br>
+                Calls: ${performanceMetrics.apiCalls} | Cache: ${preloadCount}
+            `;
+            
+            // Garder seulement les 10 dernières mesures
+            if (performanceMetrics.loadTimes.length > 10) {
+                performanceMetrics.loadTimes = performanceMetrics.loadTimes.slice(-10);
+            }
+        }
+        
+        // 🔄 POLLING INTELLIGENT (inchangé)
+        // ✅ POLLING ADAPTATIF OPTIMISÉ
+        function managePolling(modeChanged = false) {
+            if (poll) clearInterval(poll);
+
+            // Si le mode vient de changer, polling rapide pour confirmer
+            if (modeChanged) {
+                const quickInterval = mode === 'live' ? 3000 : 2500; // 3s live, 2.5s VoD (plus réactif)
+                console.log(`🔄 Mode changé - Polling rapide (${quickInterval/1000}s) pour confirmation`);
+                poll = setInterval(() => {
+                    getData();
+                }, quickInterval);
+                return;
+            }
+
+            // Polling adaptatif basé sur la stabilité
+            // ✅ Délais réduits : avec les protections (pas de rechargement si statut inchangé),
+            //    on peut être plus réactif sans surcharger le serveur
+            if (mode === 'live') {
+                // Live : polling plus fréquent si instable, moins fréquent si stable
+                let interval;
+                if (consecutiveStablePolls >= STABLE_MODE_THRESHOLD) {
+                    interval = 10000; // 10s si stable (au lieu de 20s - meilleure réactivité)
+                    console.log("📺 Mode Live stable - Polling réduit (10s)");
+                } else {
+                    interval = 8000; // 8s si instable (au lieu de 15s - détection plus rapide)
+                    console.log(`📺 Mode Live - Polling actif (8s) - Stabilité: ${consecutiveStablePolls}/${STABLE_MODE_THRESHOLD}`);
+                }
+                poll = setInterval(() => {
+                    getData();
+                }, interval);
+                return;
+            }
+
+            // VoD : polling moins fréquent si stable
+            let interval;
+            if (consecutiveStablePolls >= STABLE_MODE_THRESHOLD) {
+                interval = 10000; // 10s si stable (au lieu de 15s - meilleure réactivité)
+                console.log("📡 Mode VoD stable - Polling réduit (10s)");
+            } else {
+                interval = 8000; // 8s si instable (au lieu de 12s - détection plus rapide)
+                console.log(`📡 Mode VoD - Polling actif (8s) - Stabilité: ${consecutiveStablePolls}/${STABLE_MODE_THRESHOLD}`);
+            }
+            poll = setInterval(() => {
+                getData();
+            }, interval);
+        }
+        
+        // 🎬 GESTION DE FIN DE VIDÉO
+        video.addEventListener('ended', () => {
+            console.log("🏁 Vidéo terminée (événement ended) - Transition immédiate");
+            requestNextVideo("HTML5 ended");
+
+            if (typeof gtag !== 'undefined') {
+                gtag('event', 'webtv_video_completed', {
+                    'event_category': 'WebTV',
+                    'video_duration': Math.round(video.duration)
+                });
+            }
+        });
+        // 🔄 GESTION D'ERREUR VIDÉO
+        video.addEventListener('error', (e) => {
+            console.log("❌ Erreur vidéo:", e);
+            requestNextVideo('video error');
+        });
+
+        video.addEventListener('stalled', () => {
+            console.warn("⚠️ Flux stalled - tentative de reprise");
+            isBuffering = true;
+            if (registerStall('stalled')) return;
+            resetFreezeDetection();
+            startPlaybackOptimized();
+        });
+
+        video.addEventListener('waiting', () => {
+            console.log("⏳ Buffer en attente - surveillance renforcée");
+            isBuffering = true;
+            if (registerStall('waiting')) return;
+            resetFreezeDetection();
+        });
+
+        video.addEventListener('timeupdate', () => {
+            isBuffering = false;
+            resetStallMonitor();
+            resetFreezeDetection();
+
+            if (mode === 'live' && isLiveStream && Number.isFinite(video.duration) && Number.isFinite(video.currentTime)) {
+                const liveGap = video.duration - video.currentTime;
+                if (liveGap > 10) {
+                    const target = Math.max(video.duration - 5, 0);
+                    console.log(`🎯 Recentrage live: gap=${liveGap.toFixed(1)}s → ${target.toFixed(1)}s`);
+                    video.currentTime = target;
+                    return;
+                }
+            }
+
+            if (lastData && typeof lastData.duration === 'number') {
+                const remaining = lastData.duration - video.currentTime;
+                if (remaining <= 1 && remaining > 0) {
+                    resetFreezeDetection();
+                }
+            }
+        });
+        
+        // ❌ FONCTION D'ERREUR
+        function showError() {
+            loading.style.display = "none";
+            errorBox.style.display = "block";
+            errorBox.innerHTML = defaultErrorHTML;
+            iframe.style.display = "none";
+            video.style.display = "none";
+            syncInfo.style.display = "none";
+            perfInfo.style.display = "none";
+            
+            if (poll) clearInterval(poll);
+            if (sync) clearInterval(sync);
+            if (errorRetry) clearInterval(errorRetry);
+            stopFreezeWatchdog();
+            preloadedVideos.clear();
+
+            errorRetry = setInterval(() => {
+                console.log("🔁 Retry après erreur");
+                getData();
+            }, 10000);
+        }
+
+        function showPaused(message = "Diffusion en pause - Reprise automatique...") {
+            loading.style.display = "none";
+            errorBox.style.display = "block";
+            errorBox.innerHTML = `
+                <p>${message}</p>
+                <p>La diffusion reprendra automatiquement dès qu'elle sera relancée.</p>
+            `;
+            iframe.style.display = "none";
+            video.style.display = "none";
+            syncInfo.style.display = "none";
+            perfInfo.style.display = "none";
+
+            lastData = null;
+            currentUrl = null;
+            mode = 'paused';
+
+            if (poll) clearInterval(poll);
+            if (sync) clearInterval(sync);
+            if (errorRetry) clearInterval(errorRetry);
+            stopFreezeWatchdog();
+            preloadedVideos.clear();
+
+            poll = setInterval(() => {
+                console.log("🔁 Vérification reprise après pause");
+                getData();
+            }, 10000);
+        }
+        
+        // 📊 TRACKING OPTIMISÉ
+        let watchTimeTracker = null;
+        
+        video.addEventListener('play', () => {
+            if (watchTimeTracker) clearInterval(watchTimeTracker);
+            resetFreezeDetection();
+            resetStallMonitor();
+            isBuffering = false;
+            startFreezeWatchdog();
+            
+            watchTimeTracker = setInterval(() => {
+                if (!video.paused && video.currentTime > 0) {
+                    if (typeof gtag !== 'undefined') {
+                        gtag('event', 'webtv_watch_time_optimized', {
+                            'event_category': 'WebTV',
+                            'value': Math.round(video.currentTime / 60),
+                            'preload_cache_size': preloadedVideos.size
+                        });
+                    }
+                }
+            }, 60000);
+        });
+
+        video.addEventListener('playing', () => {
+            isBuffering = false;
+            resetStallMonitor();
+        });
+        
+        video.addEventListener('pause', () => {
+            if (watchTimeTracker) {
+                clearInterval(watchTimeTracker);
+                watchTimeTracker = null;
+            }
+            stopFreezeWatchdog();
+            isBuffering = false;
+        });
+        
+        // 🧹 NETTOYAGE
+        window.addEventListener('beforeunload', () => {
+            if (poll) clearInterval(poll);
+            if (sync) clearInterval(sync);
+            stopFreezeWatchdog();
+            if (watchTimeTracker) clearInterval(watchTimeTracker);
+            preloadedVideos.clear();
+        });
+        
+        // 🚀 DÉMARRAGE ULTRA-RAPIDE
+        console.log("🚀 EMB Mission TV Ultra-Optimisé initialisé");
+        getData();
+    </script>
+</body>
+</html>

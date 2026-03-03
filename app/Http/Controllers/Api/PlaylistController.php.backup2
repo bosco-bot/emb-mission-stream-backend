@@ -1,0 +1,453 @@
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Models\Playlist;
+use App\Models\PlaylistItem;
+use App\Models\MediaFile;
+use Illuminate\Http\Request;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Facades\DB;
+use App\Services\AzuraCastService;
+use App\Jobs\SyncPlaylistToAzuraCast;
+use App\Jobs\FinalizeAzuraCastSync;
+
+class PlaylistController extends Controller
+{
+    /**
+     * Display a listing of the playlists.
+     */
+    public function index(): JsonResponse
+    {
+        try {
+            $playlistss = Playlist::with('items.mediaFile')->orderBy('created_at', 'desc')->get();
+
+            
+            // Auto-sync avec AzuraCast si déjà synchronisée avant
+            if ($playlists->azuracast_id && $playlists->azuracast_id !== 999) {
+                SyncPlaylistToAzuraCast::dispatch($playlists->id)->delay(now()->addSeconds(5));
+            }
+            return response()->json([
+                'success' => true,
+                'message' => 'Playlists récupérées avec succès',
+                'data' => $playlistss
+            ]);
+        } catch (\Exception $e) {
+            
+            // Auto-sync avec AzuraCast si déjà synchronisée avant
+            if ($playlists->azuracast_id && $playlists->azuracast_id !== 999) {
+                SyncPlaylistToAzuraCast::dispatch($playlists->id)->delay(now()->addSeconds(5));
+            }
+            return response()->json([
+                'success' => false,
+                'message' => 'Erreur lors de la récupération des playlists',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Store a newly created or update an existing playlist in storage.
+     */
+    public function store(Request $request): JsonResponse
+    {
+        $validator = Validator::make($request->all(), [
+            'name' => 'required|string|max:255',
+            'description' => 'nullable|string',
+            'type' => 'sometimes|string|in:morning,evening,default,custom',
+            'is_loop' => 'sometimes|boolean',
+            'is_shuffle' => 'sometimes|boolean',
+            'items' => 'required|array',
+            'items.*.media_file_id' => 'required|exists:media_files,id',
+            'items.*.order' => 'required|integer|min:0',
+        ]);
+
+        if ($validator->fails()) {
+            
+            // Auto-sync avec AzuraCast si déjà synchronisée avant
+            if ($playlists->azuracast_id && $playlists->azuracast_id !== 999) {
+                SyncPlaylistToAzuraCast::dispatch($playlists->id)->delay(now()->addSeconds(5));
+            }
+            return response()->json([
+                'success' => false,
+                'message' => 'Données de validation invalides',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        DB::beginTransaction();
+        try {
+            $action = 'créée';
+            $playlists = Playlist::where('name', $request->name)
+                                ->where('type', $request->type ?? 'default')
+                                ->first();
+
+            if ($playlists) {
+                // Update existing playlist
+                $playlists->update($request->only(['name', 'description', 'type', 'is_loop', 'is_shuffle']));
+                $playlists->items()->delete(); // Remove old items
+                $action = 'mise à jour';
+            } else {
+                // Create new playlist
+                $playlists = Playlist::create($request->only(['name', 'description', 'type', 'is_loop', 'is_shuffle']));
+            }
+
+            $playlistsItemsData = [];
+            foreach ($request->items as $itemData) {
+                $mediaFile = MediaFile::find($itemData['media_file_id']);
+                $playlistsItemsData[] = new PlaylistItem([
+                    'media_file_id' => $itemData['media_file_id'],
+                    'order' => $itemData['order'],
+                    'duration' => $mediaFile->duration ?? 0,
+                    'sync_status' => 'pending',
+                ]);
+            }
+            $playlists->items()->saveMany($playlistsItemsData);
+
+            DB::commit();
+
+            $playlists->load('items.mediaFile');
+
+            
+            // Auto-sync avec AzuraCast si déjà synchronisée avant
+            if ($playlists->azuracast_id && $playlists->azuracast_id !== 999) {
+                SyncPlaylistToAzuraCast::dispatch($playlists->id)->delay(now()->addSeconds(5));
+            }
+            return response()->json([
+                'success' => true,
+                'message' => "Playlist {$action} avec succès",
+                'action' => $action,
+                'data' => $playlists
+            ], $action === 'créée' ? 201 : 200);
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            
+            // Auto-sync avec AzuraCast si déjà synchronisée avant
+            if ($playlists->azuracast_id && $playlists->azuracast_id !== 999) {
+                SyncPlaylistToAzuraCast::dispatch($playlists->id)->delay(now()->addSeconds(5));
+            }
+            return response()->json([
+                'success' => false,
+                'message' => "Erreur lors de la {$action} de la playlist",
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Display the specified playlist.
+     */
+    public function show(Playlist $playlists): JsonResponse
+    {
+        try {
+            $playlists->load('items.mediaFile');
+            
+            // Auto-sync avec AzuraCast si déjà synchronisée avant
+            if ($playlists->azuracast_id && $playlists->azuracast_id !== 999) {
+                SyncPlaylistToAzuraCast::dispatch($playlists->id)->delay(now()->addSeconds(5));
+            }
+            return response()->json([
+                'success' => true,
+                'message' => 'Playlist récupérée avec succès',
+                'data' => $playlists
+            ]);
+        } catch (\Exception $e) {
+            
+            // Auto-sync avec AzuraCast si déjà synchronisée avant
+            if ($playlists->azuracast_id && $playlists->azuracast_id !== 999) {
+                SyncPlaylistToAzuraCast::dispatch($playlists->id)->delay(now()->addSeconds(5));
+            }
+            return response()->json([
+                'success' => false,
+                'message' => 'Erreur lors de la récupération de la playlist',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Update the specified playlist in storage.
+     */
+    public function update(Request $request, Playlist $playlists): JsonResponse
+    {
+        $validator = Validator::make($request->all(), [
+            'name' => 'sometimes|string|max:255',
+            'description' => 'nullable|string',
+            'type' => 'sometimes|string|in:morning,evening,default,custom',
+            'is_loop' => 'sometimes|boolean',
+            'is_shuffle' => 'sometimes|boolean',
+            'items' => 'sometimes|array',
+            'items.*.media_file_id' => 'required|exists:media_files,id',
+            'items.*.order' => 'required|integer|min:0',
+        ]);
+
+        if ($validator->fails()) {
+            
+            // Auto-sync avec AzuraCast si déjà synchronisée avant
+            if ($playlists->azuracast_id && $playlists->azuracast_id !== 999) {
+                SyncPlaylistToAzuraCast::dispatch($playlists->id)->delay(now()->addSeconds(5));
+            }
+            
+            // Auto-sync avec AzuraCast
+            if ($playlists->azuracast_id && $playlists->azuracast_id !== 999) {
+                SyncPlaylistToAzuraCast::dispatch($playlists->id)->delay(now()->addSeconds(5));
+            }
+            return response()->json([
+                'success' => false,
+                'message' => 'Données de validation invalides',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        DB::beginTransaction();
+        try {
+            $playlists->update($request->only(['name', 'description', 'type', 'is_loop', 'is_shuffle']));
+
+            if ($request->has('items')) {
+                $playlists->items()->delete();
+                $playlistsItemsData = [];
+                foreach ($request->items as $itemData) {
+                    $mediaFile = MediaFile::find($itemData['media_file_id']);
+                    $playlistsItemsData[] = new PlaylistItem([
+                        'media_file_id' => $itemData['media_file_id'],
+                        'order' => $itemData['order'],
+                        'duration' => $mediaFile->duration ?? 0,
+                        'sync_status' => 'pending',
+                    ]);
+                }
+                $playlists->items()->saveMany($playlistsItemsData);
+            }
+
+            DB::commit();
+
+            $playlists->load('items.mediaFile');
+
+            
+            // Auto-sync avec AzuraCast si déjà synchronisée avant
+            if ($playlists->azuracast_id && $playlists->azuracast_id !== 999) {
+                SyncPlaylistToAzuraCast::dispatch($playlists->id)->delay(now()->addSeconds(5));
+            }
+            
+            // Auto-sync avec AzuraCast
+            if ($playlists->azuracast_id && $playlists->azuracast_id !== 999) {
+                SyncPlaylistToAzuraCast::dispatch($playlists->id)->delay(now()->addSeconds(5));
+            }
+            return response()->json([
+                'success' => true,
+                'message' => 'Playlist mise à jour avec succès',
+                'data' => $playlists
+            ]);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            
+            // Auto-sync avec AzuraCast si déjà synchronisée avant
+            if ($playlists->azuracast_id && $playlists->azuracast_id !== 999) {
+                SyncPlaylistToAzuraCast::dispatch($playlists->id)->delay(now()->addSeconds(5));
+            }
+            
+            // Auto-sync avec AzuraCast
+            if ($playlists->azuracast_id && $playlists->azuracast_id !== 999) {
+                SyncPlaylistToAzuraCast::dispatch($playlists->id)->delay(now()->addSeconds(5));
+            }
+            return response()->json([
+                'success' => false,
+                'message' => 'Erreur lors de la mise à jour de la playlist',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Remove the specified playlist from storage.
+     */
+    public function destroy(Playlist $playlists): JsonResponse
+    {
+        try {
+            $playlists->delete();
+
+            
+            // Auto-sync avec AzuraCast si déjà synchronisée avant
+            if ($playlists->azuracast_id && $playlists->azuracast_id !== 999) {
+                SyncPlaylistToAzuraCast::dispatch($playlists->id)->delay(now()->addSeconds(5));
+            }
+            return response()->json([
+                'success' => true,
+                'message' => 'Playlist supprimée avec succès'
+            ]);
+        } catch (\Exception $e) {
+            
+            // Auto-sync avec AzuraCast si déjà synchronisée avant
+            if ($playlists->azuracast_id && $playlists->azuracast_id !== 999) {
+                SyncPlaylistToAzuraCast::dispatch($playlists->id)->delay(now()->addSeconds(5));
+            }
+            return response()->json([
+                'success' => false,
+                'message' => 'Erreur lors de la suppression de la playlist',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Supprimer toutes les playlists
+     */
+    public function deleteAll(): JsonResponse
+    {
+        try {
+            DB::beginTransaction();
+
+            // Compter les playlists avant suppression
+            $playlistsCount = Playlist::count();
+
+            if ($playlistsCount === 0) {
+            
+            // Auto-sync avec AzuraCast si déjà synchronisée avant
+            if ($playlists->azuracast_id && $playlists->azuracast_id !== 999) {
+                SyncPlaylistToAzuraCast::dispatch($playlists->id)->delay(now()->addSeconds(5));
+            }
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Aucune playlist à supprimer',
+                    'data' => [
+                        'deleted_count' => 0
+                    ]
+                ]);
+            }
+
+            // Supprimer toutes les playlists (cascade automatique pour les items)
+            // Supprimer toutes les playlists (cascade automatique pour les items)
+            Playlist::query()->delete();
+
+            DB::commit();
+
+            
+            // Auto-sync avec AzuraCast si déjà synchronisée avant
+            if ($playlists->azuracast_id && $playlists->azuracast_id !== 999) {
+                SyncPlaylistToAzuraCast::dispatch($playlists->id)->delay(now()->addSeconds(5));
+            }
+            return response()->json([
+                'success' => true,
+                'message' => 'Toutes les playlists ont été supprimées avec succès',
+                'data' => [
+                    'deleted_count' => $playlistsCount
+                ]
+            ]);
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            
+            // Auto-sync avec AzuraCast si déjà synchronisée avant
+            if ($playlists->azuracast_id && $playlists->azuracast_id !== 999) {
+                SyncPlaylistToAzuraCast::dispatch($playlists->id)->delay(now()->addSeconds(5));
+            }
+            return response()->json([
+                'success' => false,
+                'message' => 'Erreur lors de la suppression de toutes les playlists',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Synchronize the specified playlist with AzuraCast.
+     */
+    public function syncToAzuraCast(Request $request, Playlist $playlists): JsonResponse
+    {
+        try {
+            DB::beginTransaction();
+            $playlists->load('items.mediaFile');
+
+            if ($playlists->items->count() === 0) {
+            
+            // Auto-sync avec AzuraCast si déjà synchronisée avant
+            if ($playlists->azuracast_id && $playlists->azuracast_id !== 999) {
+                SyncPlaylistToAzuraCast::dispatch($playlists->id)->delay(now()->addSeconds(5));
+            }
+                return response()->json(['success' => false, 'message' => 'La playlist est vide'], 400);
+            }
+
+            $azuracastService = new AzuraCastService();
+            $options = ['order' => $playlists->is_shuffle ? 'shuffle' : 'sequential'];
+
+            if ($playlists->azuracast_id && $playlists->azuracast_id !== 999) {
+                $result = $azuracastService->updatePlaylist($playlists->azuracast_id, $playlists->name, $options);
+            } else {
+                $result = $azuracastService->createPlaylist($playlists->name, $options);
+            }
+
+            $azuracastId = $result['id'] ?? null;
+            if (!$azuracastId) throw new \Exception('ID playlist AzuraCast manquant');
+
+            $playlists->update(['azuracast_id' => $azuracastId, 'sync_status' => 'synced', 'last_sync_at' => now()]);
+
+            $syncedCount = 0; $errorCount = 0; $uploadedFiles = [];
+
+            foreach ($playlists->items as $item) {
+                try {
+                    $mediaFile = $item->mediaFile;
+                    if (!$mediaFile) continue;
+
+                    $existingMedia = $azuracastService->findMediaByFilename($mediaFile->filename);
+
+                    if (!$existingMedia) {
+                        $localPath = storage_path('app/' . $mediaFile->file_path);
+                        if (file_exists($localPath)) {
+                            $azuracastService->copyMediaToDisk($localPath, $mediaFile->filename);
+                            $uploadedFiles[] = $mediaFile->filename;
+                        }
+                    }
+
+                    $item->update(['sync_status' => 'pending']);
+                    $syncedCount++;
+                } catch (\Exception $e) {
+                    $item->update(['sync_status' => 'error']);
+                    $errorCount++;
+                }
+            }
+
+            if (count($uploadedFiles) > 0) {
+                $azuracastService->triggerMediaScan();
+                
+                // Dispatcher le job de finalisation pour ajouter les médias aux playlists
+                FinalizeAzuraCastSync::dispatch($playlists->id)->delay(now()->addMinutes(2));
+            }
+
+            DB::commit();
+            $playlists->load('items.mediaFile');
+
+            
+            // Auto-sync avec AzuraCast si déjà synchronisée avant
+            if ($playlists->azuracast_id && $playlists->azuracast_id !== 999) {
+                SyncPlaylistToAzuraCast::dispatch($playlists->id)->delay(now()->addSeconds(5));
+            }
+            return response()->json([
+                'success' => true,
+                'message' => 'Playlist synchronisée avec AzuraCast avec succès',
+                'data' => [
+                    'playlist' => $playlists,
+                    'azuracast_playlist_id' => $azuracastId,
+                    'sync_stats' => [
+                        'total_items' => $playlists->items->count(),
+                        'synced_items' => $syncedCount,
+                        'error_items' => $errorCount,
+                        'uploaded_files' => count($uploadedFiles)
+                    ],
+                    'note' => count($uploadedFiles) > 0 ? 'Fichiers uploadés, scan en cours (1-2 min)' : 'Fichiers déjà présents'
+                ]
+            ]);
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            $playlists->update(['sync_status' => 'error', 'last_sync_at' => now()]);
+            
+            // Auto-sync avec AzuraCast si déjà synchronisée avant
+            if ($playlists->azuracast_id && $playlists->azuracast_id !== 999) {
+                SyncPlaylistToAzuraCast::dispatch($playlists->id)->delay(now()->addSeconds(5));
+            }
+            return response()->json(['success' => false, 'message' => 'Erreur lors de la synchronisation', 'error' => $e->getMessage()], 500);
+        }
+    }
+}

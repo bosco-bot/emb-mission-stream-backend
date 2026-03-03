@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EMB Mission TV - En Direct</title>
+    
+    <!-- Google tag (gtag.js) -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-R78T23LM6W"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'G-R78T23LM6W');
+    </script>
+    
+    <link rel="icon" type="image/png" href="/favicon.png">
+    <link rel="apple-touch-icon" href="/icons/Icon-192.png">
+    <meta name="description" content="Regardez EMB Mission TV en direct et en replay">
+
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #000; font-family: Arial, sans-serif; overflow: hidden; }
+        #player-container { width: 100vw; height: 100vh; position: relative; }
+        
+        #player, #html5-player { width: 100%; height: 100%; border: none; }
+        #html5-player { object-fit: contain; display: none; background: #000; }
+        
+        #loading, #error {
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            color: white; z-index: 10; text-align: center;
+        }
+        #error { color: #ff6b6b; display: none; }
+        
+        #sync-info {
+            position: absolute; top: 10px; right: 10px;
+            background: rgba(0,0,0,0.8); color: white;
+            padding: 8px 12px; border-radius: 8px; font-size: 13px;
+            z-index: 15; display: none; display: none !important; border-left: 3px solid #4CAF50;
+        }
+        
+        /* 🚀 NOUVEAU : Indicateur de performance */
+        #perf-info {
+            position: absolute; top: 10px; left: 10px;
+            background: rgba(0,0,0,0.7); color: #4CAF50;
+            padding: 6px 10px; border-radius: 6px; font-size: 11px;
+            z-index: 15; display: none; display: none !important; font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <div id="player-container">
+        <div id="loading">⚡ Chargement ultra-rapide...</div>
+        <div id="error">
+            <p>Aucun contenu disponible pour le moment.</p>
+            <p>Veuillez réessayer plus tard.</p>
+        </div>
+        <div id="sync-info"></div>
+        <div id="perf-info"></div>
+        <iframe id="player" src="" allowfullscreen style="display: none;"></iframe>
+        <video id="html5-player" controls autoplay playsinline muted preload="metadata" style="display: none;"></video>
+    </div>
+    
+    <script>
+        // 🚀 VARIABLES OPTIMISÉES
+        const API = "https://tv.embmission.com/api/webtv-auto-playlist/current-url";
+        const iframe = document.getElementById("player");
+        const video = document.getElementById("html5-player");
+        const loading = document.getElementById("loading");
+        const errorBox = document.getElementById("error");
+        const syncInfo = document.getElementById("sync-info");
+        const perfInfo = document.getElementById("perf-info");
+        
+        let currentUrl = null, mode = null, poll = null, sync = null;
+        let lastData = null, playPromise = null, lastStreamId = null;
+        let preloadedVideos = new Map(); // 🎯 Cache de preloading
+        let performanceMetrics = { apiCalls: 0, loadTimes: [] };
+        
+        // 🚀 FONCTION PRINCIPALE OPTIMISÉE
+        async function getData() {
+            const startTime = performance.now();
+            
+            try {
+                const res = await fetch(API);
+                const json = await res.json();
+                
+                // Métriques de performance
+                const apiTime = performance.now() - startTime;
+                performanceMetrics.apiCalls++;
+                performanceMetrics.loadTimes.push(apiTime);
+                updatePerfInfo(apiTime);
+                
+                if (!json.success || !json.data) return showError();
+                
+                const d = json.data.data || json.data; // Compatibilité structure
+                
+                if (d.stream_id) {
+                    showLive(`https://tv.embmission.com/webtv-live/play.html?name=${d.stream_id}`, d);
+                } else if (d.url) {
+                    showVODOptimized(d.url, d);
+                } else {
+                    showError();
+                }
+                
+                loading.style.display = "none";
+                errorBox.style.display = "none";
+                managePolling();
+                
+            } catch (error) {
+                console.error("❌ Erreur API:", error);
+                showError();
+            }
+        }
+        
+        // 🔥 NOUVELLE FONCTION VoD ULTRA-OPTIMISÉE
+        function showVODOptimized(url, d) {
+            const loadStart = performance.now();
+            
+            if (currentUrl !== url) {
+                console.log("🎬 Nouvelle vidéo:", d.item_title);
+                
+                // 🎯 Vérifier si la vidéo est preloadée
+                if (preloadedVideos.has(url)) {
+                    console.log("⚡ Utilisation vidéo preloadée");
+                    const preloadedVideo = preloadedVideos.get(url);
+                    
+                    // Transition ultra-rapide
+                    video.src = url;
+                    video.currentTime = d.current_time;
+                    showVideoPlayer();
+                    startPlaybackOptimized();
+                    
+                    preloadedVideos.delete(url); // Nettoyer le cache
+                } else {
+                    // Chargement optimisé sans video.load()
+                    console.log("🔄 Chargement optimisé");
+                    video.src = url;
+                    
+                    // ✅ ATTENDRE QUE LA VIDÉO SOIT PRÊTE
+                    video.addEventListener('loadeddata', () => {
+                        const loadTime = performance.now() - loadStart;
+                        console.log(`⚡ Vidéo chargée en ${loadTime.toFixed(0)}ms`);
+                        
+                        video.currentTime = d.current_time;
+                        showVideoPlayer();
+                        startPlaybackOptimized();
+                    }, { once: true });
+                }
+                
+                currentUrl = url;
+                mode = "vod";
+                
+                // 🎯 Preloader les prochaines vidéos
+                preloadNextVideos(d);
+                
+            } else {
+                // Synchronisation simple si même vidéo
+                const diff = Math.abs(video.currentTime - d.current_time);
+                if (diff > 5) {
+                    console.log(`🔄 Resync: ${video.currentTime.toFixed(1)}s → ${d.current_time.toFixed(1)}s`);
+                    video.currentTime = d.current_time;
+                }
+            }
+            
+            updateSyncInfo(d);
+            lastData = d;
+            startContinuousSync();
+        }
+        
+        // 🎯 PRELOADING INTELLIGENT DES PROCHAINES VIDÉOS
+        function preloadNextVideos(currentData) {
+            // Si l'API fournit next_items, les utiliser
+            if (currentData.next_items && currentData.next_items.length > 0) {
+                currentData.next_items.forEach((nextItem, index) => {
+                    setTimeout(() => preloadVideo(nextItem.url), index * 1000);
+                });
+            } else {
+                // Sinon, preloader de manière prédictive
+                setTimeout(() => {
+                    fetch(API)
+                        .then(res => res.json())
+                        .then(data => {
+                            if (data.success && data.data) {
+                                const nextData = data.data.data || data.data;
+                                if (nextData.url && nextData.url !== currentUrl) {
+                                    preloadVideo(nextData.url);
+                                }
+                            }
+                        })
+                        .catch(() => {});
+                }, 2000);
+            }
+        }
+        
+        // 🎯 FONCTION DE PRELOADING
+        function preloadVideo(url) {
+            if (!preloadedVideos.has(url) && url !== currentUrl) {
+                console.log("🔄 Preloading:", url.split('/').pop());
+                
+                const preloadVideo = document.createElement('video');
+                preloadVideo.src = url;
+                preloadVideo.preload = 'metadata';
+                preloadVideo.muted = true;
+                preloadVideo.style.display = 'none';
+                
+                preloadVideo.addEventListener('loadeddata', () => {
+                    console.log("✅ Preloadé:", url.split('/').pop());
+                    preloadedVideos.set(url, preloadVideo);
+                    
+                    // Nettoyer après 5 minutes
+                    setTimeout(() => {
+                        preloadedVideos.delete(url);
+                        preloadVideo.remove();
+                    }, 300000);
+                });
+                
+                document.body.appendChild(preloadVideo);
+            }
+        }
+        
+        // ⚡ DÉMARRAGE DE LECTURE OPTIMISÉ
+        function startPlaybackOptimized() {
+            // Vérifier l'état de la vidéo avant de jouer
+            if (video.readyState >= 2) { // HAVE_CURRENT_DATA
+                playPromise = video.play();
+                
+                if (playPromise !== undefined) {
+                    playPromise.then(() => {
+                        console.log("▶️ Lecture démarrée");
+                        playPromise = null;
+                    }).catch(error => {
+                        console.log("⚠️ Autoplay:", error.name);
+                        
+                        if (error.name === 'AbortError') {
+                            // Retry plus rapide
+                            setTimeout(() => {
+                                playPromise = video.play();
+                                if (playPromise) {
+                                    playPromise.then(() => {
+                                        console.log("▶️ Lecture redémarrée");
+                                        playPromise = null;
+                                    }).catch(() => playPromise = null);
+                                }
+                            }, 100); // Réduit à 100ms
+                        } else {
+                            playPromise = null;
+                        }
+                    });
+                }
+            } else {
+                // Attendre que la vidéo soit prête
+                video.addEventListener('canplay', () => startPlaybackOptimized(), { once: true });
+            }
+        }
+        
+        // 🎬 AFFICHAGE DU LECTEUR VIDÉO
+        function showVideoPlayer() {
+            iframe.style.display = "none";
+            video.style.display = "block";
+            syncInfo.style.display = "block";
+            perfInfo.style.display = "block";
+        }
+        
+        // 📺 FONCTION LIVE ULTRA-PROTÉGÉE
+        function showLive(url, d) {
+            // 🛡️ PROTECTION TRIPLE contre les reconnexions
+            if (currentUrl === url && iframe.style.display === "block" && mode === 'live') {
+                console.log("📺 Live déjà actif - AUCUNE reconnexion (économie bande passante)");
+                return;
+            }
+            
+            // 🔒 Vérifier si c'est vraiment un nouveau stream
+            if (lastStreamId === d.stream_id && mode === 'live') {
+                console.log("📺 Même stream Live - Pas de rechargement");
+                return;
+            }
+            
+            console.log("📺 NOUVELLE connexion Live:", d.stream_id);
+            lastStreamId = d.stream_id;
+            
+            // Nettoyer VoD complètement
+            if (sync) {
+                clearInterval(sync);
+                sync = null;
+            }
+            
+            if (playPromise) {
+                playPromise.then(() => video.pause()).catch(() => {});
+            } else {
+                video.pause();
+            }
+            
+            // 🎯 Connexion Live UNIQUE et PROTÉGÉE
+            iframe.src = url;
+            iframe.style.display = "block";
+            video.style.display = "none";
+            syncInfo.style.display = "none";
+            perfInfo.style.display = "none";
+            
+            currentUrl = url;
+            mode = 'live';
+            
+            console.log("📺 Live connecté - Polling TOTALEMENT désactivé");
+        }
+        
+        // 🔄 SYNCHRONISATION CONTINUE OPTIMISÉE
+        function startContinuousSync() {
+            if (sync) clearInterval(sync);
+            
+            sync = setInterval(() => {
+                if (mode !== 'vod' || !lastData) return;
+                
+                const now = Math.floor(Date.now() / 1000);
+                const expected = lastData.current_time + (now - lastData.sync_timestamp);
+                const timeDiff = Math.abs(video.currentTime - expected);
+                
+                // Resync seulement si décalage > 8 secondes
+                if (timeDiff > 8 && !video.paused) {
+                    console.log(`🔄 Resync auto: ${video.currentTime.toFixed(1)}s → ${expected.toFixed(1)}s`);
+                    video.currentTime = expected;
+                }
+            }, 15000);
+        }
+        
+        // 📊 AFFICHAGE DES INFOS DE SYNC
+        function updateSyncInfo(d) {
+            const minutes = Math.floor(d.current_time / 60);
+            const seconds = Math.floor(d.current_time % 60);
+            const totalMinutes = Math.floor(d.duration / 60);
+            const totalSeconds = Math.floor(d.duration % 60);
+            
+            syncInfo.innerHTML = `
+                <strong>📺 ${d.item_title.substring(0, 30)}${d.item_title.length > 30 ? '...' : ''}</strong><br>
+                ⏱️ ${minutes}:${seconds.toString().padStart(2, '0')} / ${totalMinutes}:${totalSeconds.toString().padStart(2, '0')}<br>
+                🔄 <span style="color: #4CAF50;">Synchronisé globalement</span>
+            `;
+        }
+        
+        // 📈 AFFICHAGE DES MÉTRIQUES DE PERFORMANCE
+        function updatePerfInfo(apiTime) {
+            const avgTime = performanceMetrics.loadTimes.reduce((a, b) => a + b, 0) / performanceMetrics.loadTimes.length;
+            const preloadCount = preloadedVideos.size;
+            
+            perfInfo.innerHTML = `
+                API: ${apiTime.toFixed(0)}ms | Avg: ${avgTime.toFixed(0)}ms<br>
+                Calls: ${performanceMetrics.apiCalls} | Cache: ${preloadCount}
+            `;
+            
+            // Garder seulement les 10 dernières mesures
+            if (performanceMetrics.loadTimes.length > 10) {
+                performanceMetrics.loadTimes = performanceMetrics.loadTimes.slice(-10);
+            }
+        }
+        
+        // 🔄 POLLING INTELLIGENT (inchangé)
+        function managePolling() {
+            if (poll) clearInterval(poll);
+            
+            if (mode === 'live') {
+                // 🛡️ AUCUN POLLING EN LIVE - ÉCONOMIE TOTALE DE CONNEXIONS
+                console.log("📺 Mode Live - Polling complètement désactivé");
+                return;
+            } else {
+                // 🔍 POLLING VoD ULTRA-LÉGER - Détection Live uniquement
+                console.log("📡 Polling VoD - Détection Live (120s)");
+                poll = setInterval(async () => {
+                    try {
+                        // ⚡ Requête minimale - Nouvelle route optimisée
+                        const res = await fetch('/api/webtv-auto-playlist/check-live-only');
+                        const json = await res.json();
+                        if (json.success && json.data) {
+                            const d = json.data.data || json.data;
+                            if (d.stream_id && mode === 'vod') {
+                                console.log("🔴 Live détecté ! Basculement...");
+                                getData();
+                            }
+                        }
+                    } catch (error) {
+                        console.log("⚠️ Erreur détection Live:", error);
+                    }
+                }, 120000); // ← 120 secondes (2 minutes) pour réduire drastiquement les requêtes
+            }
+        }
+        
+        // 🎬 GESTION DE FIN DE VIDÉO (NOUVEAU)
+        video.addEventListener('ended', () => {
+            console.log("🏁 Vidéo terminée - Transition immédiate");
+            getData(); // Forcer mise à jour immédiate
+            
+            if (typeof gtag !== 'undefined') {
+                gtag('event', 'webtv_video_completed', {
+                    'event_category': 'WebTV',
+                    'video_duration': Math.round(video.duration)
+                });
+            }
+        });
+        
+        // 🔄 GESTION D'ERREUR VIDÉO (NOUVEAU)
+        video.addEventListener('error', (e) => {
+            console.log("❌ Erreur vidéo:", e);
+            setTimeout(() => {
+                console.log("🔄 Retry automatique...");
+                getData();
+            }, 2000);
+        });
+        
+        // ❌ FONCTION D'ERREUR
+        function showError() {
+            loading.style.display = "none";
+            errorBox.style.display = "block";
+            iframe.style.display = "none";
+            video.style.display = "none";
+            syncInfo.style.display = "none";
+            perfInfo.style.display = "none";
+            
+            if (poll) clearInterval(poll);
+            if (sync) clearInterval(sync);
+            preloadedVideos.clear();
+        }
+        
+        // 📊 TRACKING OPTIMISÉ
+        let watchTimeTracker = null;
+        
+        video.addEventListener('play', () => {
+            if (watchTimeTracker) clearInterval(watchTimeTracker);
+            
+            watchTimeTracker = setInterval(() => {
+                if (!video.paused && video.currentTime > 0) {
+                    if (typeof gtag !== 'undefined') {
+                        gtag('event', 'webtv_watch_time_optimized', {
+                            'event_category': 'WebTV',
+                            'value': Math.round(video.currentTime / 60),
+                            'preload_cache_size': preloadedVideos.size
+                        });
+                    }
+                }
+            }, 60000);
+        });
+        
+        video.addEventListener('pause', () => {
+            if (watchTimeTracker) {
+                clearInterval(watchTimeTracker);
+                watchTimeTracker = null;
+            }
+        });
+        
+        // 🧹 NETTOYAGE
+        window.addEventListener('beforeunload', () => {
+            if (poll) clearInterval(poll);
+            if (sync) clearInterval(sync);
+            if (watchTimeTracker) clearInterval(watchTimeTracker);
+            preloadedVideos.clear();
+        });
+        
+        // 🚀 DÉMARRAGE ULTRA-RAPIDE
+        console.log("🚀 EMB Mission TV Ultra-Optimisé initialisé");
+        getData();
+    </script>
+</body>
+</html>

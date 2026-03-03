@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ✅ Pour le mode listen, utiliser localhost ou laisser FFmpeg gérer l'interface
+INPUT_URL=${INPUT_URL:-rtmp://localhost:1936/live_input}
+OUTPUT_URL=${OUTPUT_URL:-rtmp://127.0.0.1/LiveApp/live_transcoded}
+VIDEO_CODEC=${VIDEO_CODEC:-libx264}
+VIDEO_PRESET=${VIDEO_PRESET:-veryfast}
+VIDEO_BITRATE=${VIDEO_BITRATE:-3500k}
+AUDIO_CODEC=${AUDIO_CODEC:-aac}
+AUDIO_BITRATE=${AUDIO_BITRATE:-128k}
+AUDIO_SAMPLE_RATE=${AUDIO_SAMPLE_RATE:-48000}
+AUDIO_CHANNELS=${AUDIO_CHANNELS:-2}
+FRAME_RATE=${FRAME_RATE:-30}
+GOP_SECONDS=${GOP_SECONDS:-2}
+INPUT_LISTEN=${INPUT_LISTEN:-1}
+
+if ! [[ "$FRAME_RATE" =~ ^[0-9]+$ ]] || ! [[ "$GOP_SECONDS" =~ ^[0-9]+$ ]]; then
+  echo "FRAME_RATE and GOP_SECONDS must be integers" >&2
+  exit 1
+fi
+
+GOP_SIZE=${GOP_SIZE:-$((FRAME_RATE * GOP_SECONDS))}
+if ! [[ "$GOP_SIZE" =~ ^[0-9]+$ ]] || [ "$GOP_SIZE" -le 0 ]; then
+  echo "Calculated GOP_SIZE is invalid" >&2
+  exit 1
+fi
+
+FORCE_KEY_FRAMES_EXPR=${FORCE_KEY_FRAMES_EXPR:-"expr:gte(t,n_forced*$GOP_SECONDS)"}
+FFMPEG_BIN=${FFMPEG_BIN:-/usr/bin/ffmpeg}
+
+if [[ "$INPUT_LISTEN" == "1" ]]; then
+  # ✅ Mode serveur RTMP avec gestion améliorée des déconnexions
+  # -listen_timeout: timeout pour accepter une connexion (en secondes, -1 = infini)
+  # -timeout: timeout pour les opérations réseau (en microsecondes)
+  # -rtmp_live: mode live pour RTMP (compatibilité)
+  INPUT_OPTS=(-listen 1 -listen_timeout -1 -timeout 5000000)
+else
+  INPUT_OPTS=(-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 2)
+fi
+
+# ✅ Options pour améliorer la robustesse de la connexion RTMP de sortie
+OUTPUT_OPTS=(
+  -f flv
+  -flvflags no_duration_filesize
+  -rtmp_live live
+)
+
+exec "$FFMPEG_BIN" -hide_banner -loglevel warning \
+  "${INPUT_OPTS[@]}" -i "$INPUT_URL" \
+  -c:v "$VIDEO_CODEC" -preset "$VIDEO_PRESET" -b:v "$VIDEO_BITRATE" \
+  -g "$GOP_SIZE" -keyint_min "$GOP_SIZE" -sc_threshold 0 \
+  -force_key_frames "$FORCE_KEY_FRAMES_EXPR" \
+  -c:a "$AUDIO_CODEC" -b:a "$AUDIO_BITRATE" -ar "$AUDIO_SAMPLE_RATE" -ac "$AUDIO_CHANNELS" \
+  "${OUTPUT_OPTS[@]}" "$OUTPUT_URL"

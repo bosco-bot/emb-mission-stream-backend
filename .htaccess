@@ -1,0 +1,25 @@
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Interdire l'accès direct aux fichiers sensibles
+    <FilesMatch "^(\.env|\.htaccess|composer\.(json|lock)|artisan|server\.php)$">
+        Order allow,deny
+        Deny from all
+    </FilesMatch>
+
+    # Si la requête cible un fichier ou dossier existant, le servir directement
+    RewriteCond %{REQUEST_FILENAME} -f [OR]
+    RewriteCond %{REQUEST_FILENAME} -d
+    RewriteRule ^ - [L]
+
+    # Sinon rediriger vers public/
+    RewriteRule ^(.*)$ public/$1 [L]
+</IfModule>
+
+# Protéger certains dossiers sensibles
+<IfModule mod_authz_core.c>
+    <FilesMatch "^(\.env|\.htaccess|composer\.(json|lock)|artisan|server\.php)$">
+        Require all denied
+    </FilesMatch>
+</IfModule>
+

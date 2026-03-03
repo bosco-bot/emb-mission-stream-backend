@@ -1,0 +1,95 @@
+<?php
+
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\Api\RegisterController;
+use App\Http\Controllers\Api\RadioStreamController;
+use App\Http\Controllers\Api\RadioSourceController;
+
+/*
+|--------------------------------------------------------------------------
+| API Routes
+|--------------------------------------------------------------------------
+*/
+
+// Route de test simple
+Route::get('/test', function () {
+    return response()->json([
+        'success' => true,
+        'message' => 'API Laravel fonctionne parfaitement !',
+        'timestamp' => now()->toDateTimeString(),
+        'server' => 'EMB Mission Server',
+    ]);
+});
+
+// Route de test avec paramètres
+Route::get('/hello/{name}', function ($name) {
+    return response()->json([
+        'success' => true,
+        'message' => "Bonjour $name!",
+        'timestamp' => now()->toDateTimeString(),
+    ]);
+});
+
+// Route de test POST
+Route::post('/echo', function (Request $request) {
+    return response()->json([
+        'success' => true,
+        'message' => 'Données reçues',
+        'data' => $request->all(),
+        'timestamp' => now()->toDateTimeString()
+    ]);
+});
+
+Route::middleware(['auth:sanctum'])->get('/user', function (Request $request) {
+    return $request->user();
+});
+
+// Routes d'authentification (publiques)
+Route::controller(RegisterController::class)->group(function() {
+    Route::post('register', 'register');
+    Route::post('login', 'login');
+});
+
+// Routes protégées par authentification
+Route::middleware('auth:sanctum')->group(function () {
+    Route::post('logout', [RegisterController::class, 'logout']);
+});
+
+// Routes pour les sources radio
+Route::prefix('radio')->group(function () {
+    Route::apiResource('sources', RadioSourceController::class);
+    Route::get("/broadcast-info", [App\Http\Controllers\Api\RadioStreamController::class, "getBroadcastInfo"]);
+});
+
+// Routes pour le streaming radio
+Route::prefix('radio')->group(function () {
+    Route::get('/stream/status', [RadioStreamController::class, 'getStreamStatus']);
+    Route::get('/stream/current', [RadioStreamController::class, 'getCurrentTrack']);
+    Route::get('/stream/history', [RadioStreamController::class, 'getHistory']);
+    Route::get('/stream/upcoming', [RadioStreamController::class, 'getUpcomingTracks']);
+});
+
+// Routes pour la gestion des fichiers média
+Route::prefix('media')->group(function () {
+    // Routes publiques (pour l'interface de médiathèque)
+    Route::get('/files', [App\Http\Controllers\Api\MediaController::class, 'index']);
+    Route::get('/files/importing', [App\Http\Controllers\Api\MediaController::class, 'getImportingFiles']);
+    Route::get('/files/errors', [App\Http\Controllers\Api\MediaController::class, 'getErrorFiles']);
+    Route::get('/files/completed', [App\Http\Controllers\Api\MediaController::class, 'getCompletedFiles']);
+    Route::get("/files/audio", [App\Http\Controllers\Api\MediaController::class, 'index']);
+    Route::get("/files/video", [App\Http\Controllers\Api\MediaController::class, 'index']);
+    Route::get("/files/image", [App\Http\Controllers\Api\MediaController::class, 'index']);
+    Route::get('/files/{mediaFile}', [App\Http\Controllers\Api\MediaController::class, 'show']);
+    
+    // Actions sur les fichiers
+    Route::delete('/files/{mediaFile}/cancel', [App\Http\Controllers\Api\MediaController::class, 'cancelImport']);
+    Route::post('/files/{mediaFile}/retry', [App\Http\Controllers\Api\MediaController::class, 'retryImport']);
+    Route::delete('/files/{mediaFile}', [App\Http\Controllers\Api\MediaController::class, 'destroy']);
+    
+    // Upload de fichiers
+    Route::post('/upload-session', [App\Http\Controllers\Api\MediaController::class, 'createUploadSession']);
+    Route::post('/upload', [App\Http\Controllers\Api\MediaController::class, 'uploadFile']);
+    Route::post('/upload-multiple', [App\Http\Controllers\Api\MediaController::class, 'uploadMultipleFiles']);
+});
+

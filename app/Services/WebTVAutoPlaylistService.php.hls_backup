@@ -1,0 +1,448 @@
+<?php
+
+namespace App\Services;
+
+use App\Models\WebTVPlaylist;
+use App\Models\WebTVPlaylistItem;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Cache;
+use App\Services\FFmpegHLSService;
+
+class WebTVAutoPlaylistService
+{
+    private AntMediaVoDService $vodService;
+    private FFmpegHLSService $hlsService;
+    
+    public function __construct()
+    {
+        $this->vodService = new AntMediaVoDService();
+        $this->hlsService = new FFmpegHLSService();
+    }
+    
+    /**
+     * Démarrer la playlist automatique WebTV
+     */
+    public function startAutoPlaylist(WebTVPlaylist $playlist): array
+    {
+        try {
+            Log::info("🎬 Démarrage de la playlist automatique WebTV", [
+                'playlist_id' => $playlist->id,
+                'playlist_name' => $playlist->name
+            ]);
+            
+            // Vérifier s'il y a un live en cours
+            $liveStatus = $this->checkLiveStatus();
+            
+            if ($liveStatus['is_live']) {
+                // Live en cours - pas de VoD automatiques
+                Log::info("📺 Live en cours - VoD automatiques désactivés", [
+                    'live_stream' => $liveStatus['stream_id']
+                ]);
+                
+                return [
+                    'success' => true,
+                    'message' => 'Live en cours - VoD automatiques désactivés',
+                    'mode' => 'live',
+                    'live_stream' => $liveStatus['stream_id']
+                ];
+            } else {
+                // Pas de live - démarrer les VoD automatiques
+                Log::info("🎥 Pas de live - Démarrage des VoD automatiques");
+                
+                $vodResult = $this->startVodPlaylist($playlist);
+                
+                return [
+                    'success' => true,
+                    'message' => 'VoD automatiques démarrés',
+                    'mode' => 'vod',
+                    'vod_result' => $vodResult
+                ];
+            }
+            
+        } catch (\Exception $e) {
+            Log::error("❌ Erreur démarrage playlist automatique: " . $e->getMessage());
+            
+            return [
+                'success' => false,
+                'message' => 'Erreur lors du démarrage de la playlist automatique: ' . $e->getMessage()
+            ];
+        }
+    }
+    
+    /**
+     * Vérifier s'il y a un live en cours
+     */
+    private function checkLiveStatus(): array
+    {
+        try {
+            // Vérifier les streams live actifs dans Ant Media Server
+            $response = Http::withBasicAuth(
+                config('app.webtv_stream_username'),
+                config('app.webtv_stream_password')
+            )->get('http://localhost:5080/LiveApp/rest/v2/broadcasts/list/0/10');
+            
+            if ($response->successful()) {
+                $streams = $response->json();
+                
+                // Chercher un stream live actif
+                foreach ($streams as $stream) {
+                    if (($stream['type'] === 'live' || $stream['type'] === 'liveStream') && $stream['status'] === 'broadcasting') {
+                        return [
+                            'is_live' => true,
+                            'stream_id' => $stream['streamId'],
+                            'stream_name' => $stream['name']
+                        ];
+                    }
+                }
+            }
+            
+            return [
+                'is_live' => false,
+                'stream_id' => '',
+                'stream_name' => ''
+            ];
+            
+        } catch (\Exception $e) {
+            Log::error("❌ Erreur vérification live status: " . $e->getMessage());
+            
+            return [
+                'is_live' => false,
+                'stream_id' => '',
+                'stream_name' => ''
+            ];
+        }
+    }
+    
+    /**
+     * Démarrer la playlist VoD automatique
+     */
+    private function startVodPlaylist(WebTVPlaylist $playlist): array
+    {
+        try {
+            $vodItems = $playlist->items()->where('sync_status', 'synced')->get();
+            
+            if ($vodItems->isEmpty()) {
+                return [
+                    'success' => false,
+                    'message' => 'Aucun VoD disponible pour la playlist'
+                ];
+            }
+            
+            // Créer une playlist de lecture automatique
+            $playlistData = [];
+            foreach ($vodItems as $item) {
+                $vodInfo = $this->vodService->checkVoD($item);
+                if ($vodInfo['success']) {
+                    $playlistData[] = [
+                        'title' => $item->title,
+                        'url' => $vodInfo['direct_url'],
+                        'duration' => $item->duration,
+                        'order' => $item->order
+                    ];
+                }
+            }
+            
+            // Trier par ordre
+            usort($playlistData, function($a, $b) {
+                return $a['order'] <=> $b['order'];
+            });
+            
+            Log::info("🎥 Playlist VoD automatique créée", [
+                'playlist_id' => $playlist->id,
+                'items_count' => count($playlistData)
+            ]);
+            
+            return [
+                'success' => true,
+                'message' => 'Playlist VoD automatique créée',
+                'playlist_data' => $playlistData,
+                'items_count' => count($playlistData)
+            ];
+            
+        } catch (\Exception $e) {
+            Log::error("❌ Erreur création playlist VoD: " . $e->getMessage());
+            
+            return [
+                'success' => false,
+                'message' => 'Erreur lors de la création de la playlist VoD: ' . $e->getMessage()
+            ];
+        }
+    }
+    
+    /**
+     * Surveiller et gérer le basculement automatique
+     */
+    public function monitorAutoSwitch(): array
+    {
+        try {
+            $liveStatus = $this->checkLiveStatus();
+            
+            if ($liveStatus['is_live']) {
+                // Live en cours - arrêter les VoD automatiques
+                Log::info("📺 Live détecté - Arrêt des VoD automatiques");
+                
+                return [
+                    'success' => true,
+                    'message' => 'Live détecté - VoD automatiques arrêtés',
+                    'mode' => 'live',
+                    'live_stream' => $liveStatus['stream_id']
+                ];
+            } else {
+                // Pas de live - maintenir les VoD automatiques
+                Log::info("🎥 Pas de live - Maintien des VoD automatiques");
+                
+                return [
+                    'success' => true,
+                    'message' => 'Pas de live - VoD automatiques maintenus',
+                    'mode' => 'vod'
+                ];
+            }
+            
+        } catch (\Exception $e) {
+            Log::error("❌ Erreur surveillance basculement: " . $e->getMessage());
+            
+            return [
+                'success' => false,
+                'message' => 'Erreur lors de la surveillance du basculement: ' . $e->getMessage()
+            ];
+        }
+    }
+    
+    /**
+     * Obtenir le statut actuel de la playlist automatique
+     */
+    public function getAutoPlaylistStatus(): array
+    {
+        try {
+            $liveStatus = $this->checkLiveStatus();
+            
+            return [
+                'success' => true,
+                'message' => $liveStatus['is_live'] ? 'Live en cours' : 'VoD actif',
+                'is_live' => $liveStatus['is_live'],
+                'mode' => $liveStatus['is_live'] ? 'live' : 'vod',
+                'live_stream' => $liveStatus['stream_id'] ?: 0,
+                'live_name' => $liveStatus['stream_name'] ?: ''
+            ];
+            
+        } catch (\Exception $e) {
+            Log::error("❌ Erreur statut playlist automatique: " . $e->getMessage());
+            
+            return [
+                'success' => false,
+                'message' => 'Erreur lors de la récupération du statut: ' . $e->getMessage()
+            ];
+        }
+    }
+    
+    /**
+     * Obtenir l'URL de lecture actuelle (live ou VoD)
+     */
+    public function getCurrentPlaybackUrl(): array
+    {
+        try {
+            $liveStatus = $this->checkLiveStatus();
+            
+            if ($liveStatus['is_live']) {
+                // Mode LIVE - Inchangé
+                $liveUrl = "http://15.235.86.98:5080/LiveApp/play.html?name=" . $liveStatus['stream_id'];
+                
+                return [
+                    'success' => true,
+                    'message' => 'Live stream available',
+                    'mode' => 'live',
+                    'url' => $liveUrl,
+                    'stream_id' => $liveStatus['stream_id'],
+                    'stream_name' => $liveStatus['stream_name']
+                ];
+            } else {
+                // Mode VoD - NOUVEAU : Stream HLS continu
+                if (!$this->hlsService->isStreamActive()) {
+                    $streamResult = $this->hlsService->createContinuousStream();
+                    if (!$streamResult['success']) {
+                        return [
+                            'success' => false,
+                            'message' => 'Erreur création stream HLS: ' . $streamResult['message']
+                        ];
+                    }
+                }
+                
+                return [
+                    'success' => true,
+                    'message' => 'Stream HLS continu disponible',
+                    'mode' => 'vod',
+                    'url' => $this->hlsService->getHLSStreamUrl(),
+                    'format' => 'HLS (M3U8)',
+                    'continuous' => true
+                ];
+            }
+            
+        } catch (\Exception $e) {
+            Log::error("❌ Erreur récupération URL de lecture: " . $e->getMessage());
+            
+            return [
+                'success' => false,
+                'message' => 'Erreur lors de la récupération de l\'URL de lecture: ' . $e->getMessage()
+            ];
+        }
+    }
+    
+    /**
+     * Obtenir le prochain élément VoD de la playlist active
+     * Utilise le Cache pour gérer la position par URL de lecture actuelle
+     */
+    public function getNextVodItem(): array
+    {
+        try {
+            // Récupérer l'URL actuellement en lecture
+            $currentUrlData = $this->getCurrentPlaybackUrl();
+            
+            if (!$currentUrlData['success']) {
+                return [
+                    'success' => false,
+                    'message' => 'Aucune source de lecture disponible'
+                ];
+            }
+            
+            // Récupérer la playlist active
+            $activePlaylist = WebTVPlaylist::where('is_active', true)->first();
+            
+            if (!$activePlaylist) {
+                return [
+                    'success' => false,
+                    'message' => 'Aucune playlist active'
+                ];
+            }
+            
+            // Récupérer les items de la playlist
+            $vodItems = $activePlaylist->items()
+                ->where('sync_status', 'synced')
+                ->orderBy('order')
+                ->get();
+            
+            if ($vodItems->isEmpty()) {
+                return [
+                    'success' => false,
+                    'message' => 'Aucun VoD disponible dans la playlist'
+                ];
+            }
+            
+            // Utiliser session_id pour une position par utilisateur
+            $sessionId = session()->getId();
+            $cacheKey = 'webtv_position_' . $activePlaylist->id . '_' . $sessionId;
+            $cachePlaylistKey = 'webtv_playlist_shuffle_' . $activePlaylist->id;
+            
+            // Récupérer ou initialiser la position
+            $currentPosition = Cache::get($cacheKey, 0);
+            $shuffledOrder = Cache::get($cachePlaylistKey, []);
+            
+            // Si c'est une nouvelle playlist ou pas de shuffle encore, créer l'ordre
+            if (empty($shuffledOrder) && $activePlaylist->shuffle_enabled) {
+                $shuffledOrder = range(0, $vodItems->count() - 1);
+                shuffle($shuffledOrder);
+                Cache::put($cachePlaylistKey, $shuffledOrder, now()->addDays(7));
+            }
+            
+            // ✅ Validation: Si le nombre d'items a changé, régénérer le shuffle
+            $currentItemCount = $vodItems->count();
+            if (!empty($shuffledOrder) && count($shuffledOrder) !== $currentItemCount && $activePlaylist->shuffle_enabled) {
+                Log::info("⚠️ Nombre d'items playlist changé, régénération shuffle", [
+                    'playlist_id' => $activePlaylist->id,
+                    'ancien_count' => count($shuffledOrder),
+                    'nouveau_count' => $currentItemCount
+                ]);
+                $shuffledOrder = range(0, $currentItemCount - 1);
+                shuffle($shuffledOrder);
+                Cache::put($cachePlaylistKey, $shuffledOrder, now()->addDays(7));
+            }
+            
+            // Gérer l'ordre selon shuffle_enabled
+            if ($activePlaylist->shuffle_enabled && !empty($shuffledOrder)) {
+                // Utiliser la position dans l'ordre mélangé
+                if ($currentPosition < count($shuffledOrder)) {
+                    $itemIndex = $shuffledOrder[$currentPosition];
+                    $nextItem = $vodItems[$itemIndex];
+                } else {
+                    // Fin de la playlist mélangée
+                    if ($activePlaylist->is_loop) {
+                        // Recommencer avec un nouveau shuffle
+                        $shuffledOrder = range(0, $vodItems->count() - 1);
+                        shuffle($shuffledOrder);
+                        Cache::put($cachePlaylistKey, $shuffledOrder, now()->addDays(7));
+                        $currentPosition = 0;
+                        $itemIndex = $shuffledOrder[0];
+                        $nextItem = $vodItems[$itemIndex];
+                    } else {
+                        return [
+                            'success' => false,
+                            'message' => 'Fin de la playlist'
+                        ];
+                    }
+                }
+            } else {
+                // Ordre normal
+                if ($currentPosition < $vodItems->count()) {
+                    $nextItem = $vodItems[$currentPosition];
+                } else {
+                    // Fin de la playlist
+                    if ($activePlaylist->is_loop) {
+                        // Recommencer depuis le début
+                        $currentPosition = 0;
+                        $nextItem = $vodItems[0];
+                    } else {
+                        return [
+                            'success' => false,
+                            'message' => 'Fin de la playlist'
+                        ];
+                    }
+                }
+            }
+            
+            // Avancer à la prochaine position
+            $currentPosition++;
+            Cache::put($cacheKey, $currentPosition, now()->addHours(1));
+            
+            // Récupérer l'URL VoD
+            $vodInfo = $this->vodService->checkVoD($nextItem);
+            
+            if (!$vodInfo['success']) {
+                return [
+                    'success' => false,
+                    'message' => 'Erreur lors de la récupération du VoD: ' . ($vodInfo['message'] ?? 'Unknown error')
+                ];
+            }
+            
+            Log::info('🎥 Prochaine vidéo VoD récupérée', [
+                'playlist_id' => $activePlaylist->id,
+                'position' => $currentPosition - 1,
+                'item_title' => $nextItem->title,
+                'shuffle_enabled' => $activePlaylist->shuffle_enabled,
+                'is_loop' => $activePlaylist->is_loop
+            ]);
+            
+            return [
+                'success' => true,
+                'data' => [
+                    'url' => $vodInfo['direct_url'],
+                    'title' => $nextItem->title,
+                    'duration' => $nextItem->duration
+                ]
+            ];
+            
+        } catch (\Exception $e) {
+            Log::error('❌ Erreur récupération prochain VoD: ' . $e->getMessage());
+            
+            return [
+                'success' => false,
+                'message' => 'Erreur lors de la récupération du prochain VoD: ' . $e->getMessage()
+            ];
+        }
+    }
+}
+
+
+
+
+
+

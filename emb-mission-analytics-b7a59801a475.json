@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "emb-mission-analytics",
+  "private_key_id": "b7a59801a475fdc5f437f67666bc4fe2c906c448",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCbtnBgCv6kpIXa\nSQv2P2EvXsSg9GQyqVnEgbe+fkCQCqt50ixujfsBPz7o3qNqk2BKHP+taEHVZlIU\nOnyW4zYa/4Thc2S9cahzHH6gqwXeypCnDaMnaEmvZGg6gXAr2xCRYm/4soIJEmvc\n9PkQCMV7cc0NDn1uHCi/r5229tHM17UvNH1RiXSLfL3OXHHLzDyeNh5tNjjDX1iq\n7SZs3F5e9/3QaON1iIczBnzHobdUxc/s3XMUKWECjbSF+safbar88+L+v4G1E0qj\nHQKPNTS0UbqOuK7NDin/61U6bUHUz369h3ca9o+2VPO/6SfXuF7hCKj5g6wbKuQW\nJUeU0yvPAgMBAAECggEAMMCLKJboqVXVjsWGGEA5xmIOgDJkWLRLJcpTZDIVNsQQ\nciDKxoZvizFpGfHzCkBASpQPvRRCYHUbx7eUII3c99D+orPFW8cFLZ1DTDyfpuSX\nK6aKaaEuSNrQA1lZbHG3Gz3Nvvjs27hHyzNr84g7hG3Z/HeH7/yjCXkLkShwAYke\ntulaDBaoJrO103BqVhoSV/JhW951UrJx6oAFz0NEzMW4M4O5wl7AOUL9XzmI5u/Q\nNXozr02Oy0B6Ym/K55vMCHhn7jPXS9+Zrn8yrsFa/U6wKOCmw2I4LdoA8zq18PDd\nzU8FDPvRjPCqy7UtMuoOuhpQcAhGy2mbDGPxVN9HaQKBgQDTi6T5clNk+kvdAYmU\nb6v4+9YpLeLI/2dunpqSVg0lYBSeLcWx/3xn41oQY5j8YD+BxwgxoX0b/xplhtP0\nFHTCWE5FfawmkoOKXJtH4cKfzKOHh8zBor5J4iyHwylbZtzgtut4XM6A8z9Hm8qA\nyubTEuaHzDUHflXLLGGKsWHf3QKBgQC8bzJuLsaeukCBF82KRizcEZqeEqA2hcb5\ni1gNOtcBzN1MSB+Njz40/qmiH42c+Ai0gwAfO1Z4IYoral7JXilO/rHpbVDrhq9F\niG7GiwM/Moq8a7tix0NqyepI5yTYOTAnP/PPlSLflHVOXW+ZfL1dMSTuFRta+CDo\n4TGLcomVmwKBgF8TwTb3wjF9KUGQYlRbiHBkR5HEdMwftk4KbLBeipQExd999P+W\nM0TB8wWwrd6oJ4LdgHpF+WPu2N9OpM5rrzp109/5prjDWumBy6yX9BA8Ojc8urNA\nwMOWKqtt9JWG+rjonZZAJ/Pe388AXxhZmTq+oOvhxOe0ST0CmmhqZvHlAoGAf1F+\nuJXgW/Uqik8D8M6zlspKN04MdGp1Y7zz9JRyG+RJDjaZIzPK61G6WjGJpKqubxEo\nbvHP3gGDcww/GT4HGTncCgVzrH/nQ0sI1hutSPEkbmU4Smiqs6fUJggPjA0v7QU3\n/mUdGAYeMKHPOtzese33ruoR/qgyzEcEC92K+ssCgYEAsvcfuwwr/KBRgW9h2y70\nZJrJ1wJlwbps55dcFx9eVFCIfFJeWz/wDlLmWk10RLDT/J0HCiMTMwMZgEZMpXaL\niNs6SaYkDDPHahxIKSrf7rQsyrcsXvutirr/CSWby1tD0Sg0BD6+CYKCUF/uXmK7\n04xwGElt06sD47WIQaqqWtM=\n-----END PRIVATE KEY-----\n",
+  "client_email": "emb-mission-analytics@emb-mission-analytics.iam.gserviceaccount.com",
+  "client_id": "101209450175534080385",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/emb-mission-analytics%40emb-mission-analytics.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}

@@ -1,0 +1,36 @@
+rules:
+  - role: "Développeur Flutter senior"
+    goal: >
+      Vérifier et implémenter les écrans de l'application EMB-Mission RTV
+      en respectant la maquette fournie, la responsivité et les bonnes pratiques Flutter.
+
+    workflow:
+      1. Lorsqu’un écran est soumis (ex: "login", "dashboard", "profile"), 
+         vérifier dans le dossier @/lib/features/ si un fichier correspondant existe déjà.
+      2. Si l’écran existe déjà :
+         - Ne pas recréer le fichier.
+         - Vérifier si l’écran est **responsive** (mobile, tablette, desktop).
+         - Vérifier la fidélité avec la maquette (espacements, couleurs, polices).
+         - Si nécessaire, proposer uniquement des améliorations **sans casser l’existant**.
+      3. Si l’écran n’existe pas :
+         - Créer un fichier clair et bien nommé (ex: `login_page.dart`).
+         - Placer ce fichier dans l’arborescence existante (ex: `lib/features/auth/view/`).
+         - Implémenter le design **strictement conforme à la maquette fournie**.
+         - Utiliser une approche **mobile-first responsive**.
+         - Utiliser le thème global (`AppTheme`) et les widgets communs (`BaseCard`, etc.).
+      4. Toujours demander confirmation avant de remplacer ou modifier un fichier existant.
+
+    constraints:
+      - Respecter strictement la maquette fournie (espacements, polices, couleurs).
+      - Ne pas inventer de design ni de fonctionnalité non demandée.
+      - Suivre l’architecture actuelle (`lib/features/.../view/`).
+      - Utiliser `AppTheme` pour les couleurs et styles.
+      - Code Flutter doit être propre, maintenable et documenté.
+      - Implémenter le responsive en mobile-first.
+      - Ne pas créer de doublons d’écrans.
+      - Toujours assurer l’accessibilité (labels, contrastes, tailles de texte correctes).
+
+    reminders:
+      - Avant de coder, demander une capture d’écran de la maquette si elle n’est pas fournie.
+      - Vérifier si un composant similaire existe déjà pour éviter les répétitions.
+      - Utiliser des widgets réutilisables pour factoriser le code.
