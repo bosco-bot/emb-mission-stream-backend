@@ -12,6 +12,7 @@
 
 # Environment
 .env
+.env.from-archive
 .env.backup
 .phpunit.result.cache
 Homestead.json
@@ -29,6 +30,9 @@ yarn-error.log
 # OS
 .DS_Store
 Thumbs.db
+
+# Logs / sessions (ne pas versionner)
+monitoring_sessions/cron.log
 
 # Large / generated (do not push to GitHub)
 ams_community.zip
