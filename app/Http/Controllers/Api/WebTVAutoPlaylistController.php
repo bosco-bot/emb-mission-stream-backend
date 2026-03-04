@@ -165,7 +165,7 @@ class WebTVAutoPlaylistController extends Controller
                 'success' => true,
                 'message' => 'Diffusion reprise avec succès - Système automatique activé',
                 'status' => 'resumed',
-                'current_mode' => $status['data']['mode'] ?? 'unknown'
+                'current_mode' => $status['mode'] ?? 'unknown'
             ]);
             
         } catch (\Exception $e) {

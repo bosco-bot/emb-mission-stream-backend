@@ -73,7 +73,7 @@ class WebTVAutoPlaylistService
     /**
      * Vérifier s'il y a un live en cours
      */
-    private function checkLiveStatus(): array
+    public function checkLiveStatus(): array
     {
         try {
             // Vérifier les streams live actifs dans Ant Media Server
@@ -235,7 +235,178 @@ class WebTVAutoPlaylistService
             ];
         }
     }
-    
+
+    /**
+     * Position de sync globale pour le flux unifié (unified.m3u8).
+     * Utilisée par UnifiedStreamController (M3U) et getCurrentPlaybackContext.
+     */
+    public function getCurrentSyncPosition(): array
+    {
+        try {
+            $activePlaylist = WebTVPlaylist::where('is_active', true)->first();
+            if (!$activePlaylist) {
+                return [
+                    'success' => false,
+                    'message' => 'Aucune playlist active',
+                    'current_item' => ['item_id' => null, 'current_time' => 0.0],
+                ];
+            }
+            $cacheKey = 'webtv_unified_sync_position_' . $activePlaylist->id;
+            $cached = Cache::get($cacheKey);
+            if (is_array($cached) && isset($cached['item_id'])) {
+                return [
+                    'success' => true,
+                    'current_item' => [
+                        'item_id' => (int) $cached['item_id'],
+                        'current_time' => (float) ($cached['current_time'] ?? 0),
+                    ],
+                ];
+            }
+            $firstItem = $activePlaylist->items()
+                ->where('sync_status', 'synced')
+                ->orderBy('order')
+                ->first();
+            if (!$firstItem) {
+                return [
+                    'success' => false,
+                    'message' => 'Aucun item dans la playlist',
+                    'current_item' => ['item_id' => null, 'current_time' => 0.0],
+                ];
+            }
+            $default = ['item_id' => $firstItem->id, 'current_time' => 0.0];
+            Cache::put($cacheKey, $default, now()->addHours(1));
+            return ['success' => true, 'current_item' => $default];
+        } catch (\Exception $e) {
+            Log::error('getCurrentSyncPosition: ' . $e->getMessage());
+            return [
+                'success' => false,
+                'message' => $e->getMessage(),
+                'current_item' => ['item_id' => null, 'current_time' => 0.0],
+            ];
+        }
+    }
+
+    /**
+     * Contexte de lecture (live ou VoD) pour le flux unifié.
+     * Utilisé par UnifiedStreamController::getUnifiedHLS et UnifiedHlsBuilder::build.
+     * Cache playback_context_v2_* invalidé par AntMediaWebhookController.
+     */
+    public function getCurrentPlaybackContext(): array
+    {
+        $cacheKey = 'playback_context_v2_' . floor(time() / 2);
+        $cached = Cache::get($cacheKey);
+        if (is_array($cached) && isset($cached['mode'])) {
+            return $cached;
+        }
+        try {
+            if (Cache::get('webtv_system_paused')) {
+                $context = ['success' => true, 'mode' => 'paused'];
+                Cache::put($cacheKey, $context, now()->addSeconds(5));
+                return $context;
+            }
+            $liveStatus = $this->checkLiveStatus();
+            if ($liveStatus['is_live'] && !empty($liveStatus['stream_id'])) {
+                $context = [
+                    'success' => true,
+                    'mode' => 'live',
+                    'live' => [
+                        'stream_id' => $liveStatus['stream_id'],
+                        'stream_name' => $liveStatus['stream_name'] ?? '',
+                        'source_url' => 'http://localhost:5080/LiveApp/play.html?name=' . $liveStatus['stream_id'],
+                    ],
+                ];
+                Cache::put($cacheKey, $context, now()->addSeconds(5));
+                return $context;
+            }
+            $activePlaylist = WebTVPlaylist::where('is_active', true)->first();
+            if (!$activePlaylist) {
+                $context = ['success' => false, 'message' => 'Aucune playlist active', 'mode' => 'vod'];
+                Cache::put($cacheKey, $context, now()->addSeconds(5));
+                return $context;
+            }
+            $sync = $this->getCurrentSyncPosition();
+            $currentItemId = $sync['current_item']['item_id'] ?? null;
+            $currentTime = (float) ($sync['current_item']['current_time'] ?? 0.0);
+            $items = $activePlaylist->items()
+                ->where('sync_status', 'synced')
+                ->orderBy('order')
+                ->get();
+            $sequence = [];
+            foreach ($items as $item) {
+                if ($item->ant_media_item_id) {
+                    $sequence[] = [
+                        'item_id' => $item->id,
+                        'title' => $item->title ?? '',
+                        'ant_media_item_id' => $item->ant_media_item_id,
+                        'duration' => (float) ($item->duration ?? 0),
+                    ];
+                }
+            }
+            if (empty($sequence)) {
+                $context = ['success' => false, 'message' => 'Aucun item VoD synchronisé', 'mode' => 'vod'];
+                Cache::put($cacheKey, $context, now()->addSeconds(5));
+                return $context;
+            }
+            if ($currentItemId === null) {
+                $currentItemId = $sequence[0]['item_id'];
+                $currentTime = 0.0;
+            }
+            $context = [
+                'success' => true,
+                'mode' => 'vod',
+                'sequence' => ['items' => $sequence],
+                'current_item' => ['item_id' => $currentItemId, 'current_time' => $currentTime],
+                'playlist' => ['is_loop' => (bool) $activePlaylist->is_loop],
+            ];
+            Cache::put($cacheKey, $context, now()->addSeconds(5));
+            return $context;
+        } catch (\Exception $e) {
+            Log::error('getCurrentPlaybackContext: ' . $e->getMessage());
+            return ['success' => false, 'message' => $e->getMessage(), 'mode' => 'vod'];
+        }
+    }
+
+    /**
+     * Mettre le système en pause (flux unifié en mode paused).
+     */
+    public function pauseSystem(): array
+    {
+        try {
+            Cache::put('webtv_system_paused', true, now()->addHours(24));
+            Log::info('⏸️ Système WebTV mis en pause');
+            return ['success' => true, 'message' => 'Système en pause'];
+        } catch (\Exception $e) {
+            Log::error('pauseSystem: ' . $e->getMessage());
+            return ['success' => false, 'message' => $e->getMessage()];
+        }
+    }
+
+    /**
+     * Reprendre le système (sortie du mode paused).
+     */
+    public function resumeSystem(): void
+    {
+        Cache::forget('webtv_system_paused');
+        Log::info('▶️ Système WebTV repris');
+    }
+
+    /**
+     * Snapshot du statut en temps réel (SSE / WatchStreamController).
+     */
+    public function getRealtimeStatusSnapshot(): array
+    {
+        $urlData = $this->getCurrentPlaybackUrl();
+        $status = $this->getAutoPlaylistStatus();
+        return array_merge([
+            'success' => $urlData['success'] ?? true,
+            'mode' => $status['mode'] ?? ($urlData['mode'] ?? 'vod'),
+            'url' => $urlData['url'] ?? null,
+            'stream_id' => $urlData['stream_id'] ?? null,
+            'stream_name' => $urlData['stream_name'] ?? null,
+            'is_live' => $status['is_live'] ?? false,
+        ], $urlData);
+    }
+
     /**
      * Obtenir l'URL de lecture actuelle (live ou VoD)
      */
