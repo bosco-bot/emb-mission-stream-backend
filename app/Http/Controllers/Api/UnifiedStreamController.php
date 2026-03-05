@@ -121,6 +121,7 @@ class UnifiedStreamController extends Controller
                 'Pragma' => 'no-cache',
                 'Expires' => '0',
                 'X-Content-Type-Options' => 'nosniff',
+                'X-Served-By' => 'Laravel-UnifiedStream',
                 // Les en-têtes CORS sont gérés par le middleware HandleCors de Laravel
             ]);
         } catch (\Exception $e) {
@@ -955,6 +956,16 @@ class UnifiedStreamController extends Controller
         return $segments;
     }
 
+    /**
+     * Détecte si le fichier unified.m3u8 est le placeholder live (sans segments .ts).
+     * Après une transition Live → VOD, le worker peut ne pas avoir encore réécrit le fichier.
+     */
+    private function isUnifiedPlaylistLivePlaceholder(string $content): bool
+    {
+        return strpos($content, '.ts') === false
+            && (strpos($content, 'servi dynamiquement') !== false || strpos($content, '#EXT-X-PLAYLIST-TYPE:LIVE') !== false);
+    }
+
     private function serveUnifiedPlaylist()
     {
         try {
@@ -976,12 +987,24 @@ class UnifiedStreamController extends Controller
                 return $this->generateErrorHLS('Erreur lecture flux unifié');
             }
 
+            // ✅ Transition Live → VOD : si le fichier est encore le placeholder live (sans segments), régénérer
+            if ($this->isUnifiedPlaylistLivePlaceholder($content)) {
+                Log::info('🔄 Fichier unified.m3u8 encore en placeholder live — régénération VOD à la volée');
+                if ($this->fallbackBuilder->build()) {
+                    $content = @file_get_contents($this->unifiedPlaylistPath);
+                }
+                if ($content === false || $content === '' || $this->isUnifiedPlaylistLivePlaceholder($content)) {
+                    return $this->generateErrorHLS('Flux en cours de préparation, réessayez');
+                }
+            }
+
             return response($content, 200, [
                 'Content-Type' => 'application/vnd.apple.mpegurl; charset=utf-8',
                 'Cache-Control' => 'no-cache, no-store, must-revalidate, private',
                 'Pragma' => 'no-cache',
                 'Expires' => '0',
                 'X-Content-Type-Options' => 'nosniff',
+                'X-Served-By' => 'Laravel-UnifiedStream',
                 // Les en-têtes CORS sont gérés par le middleware HandleCors de Laravel
             ]);
         } catch (\Exception $e) {
@@ -1186,6 +1209,7 @@ class UnifiedStreamController extends Controller
                 'Cache-Control' => 'no-cache, no-store, must-revalidate',
                 'Pragma' => 'no-cache',
                 'Expires' => '0',
+                'X-Served-By' => 'Laravel-UnifiedStream',
                 // Les en-têtes CORS sont gérés par le middleware HandleCors de Laravel
             ]);
         } catch (\Exception $e) {
@@ -1377,6 +1401,7 @@ class UnifiedStreamController extends Controller
         return response($errorM3u8, 200, [
             'Content-Type' => 'application/vnd.apple.mpegurl',
             'Cache-Control' => 'no-cache',
+            'X-Served-By' => 'Laravel-UnifiedStream',
             // Les en-têtes CORS sont gérés par le middleware HandleCors de Laravel
         ]);
     }

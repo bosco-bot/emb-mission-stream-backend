@@ -24,6 +24,13 @@ class LiveStatusController extends Controller
         return response()->stream(function () use ($autoPlaylistService) {
             @set_time_limit(0);
 
+            // Premier octet immédiat pour établir la connexion (évite "EventSource failed loading" si le navigateur timeout)
+            echo ": ok\n\n";
+            if (ob_get_level() > 0) {
+                @ob_flush();
+            }
+            flush();
+
             $lastPayload = null;
             $tick = 0;
             $heartbeatEvery = 10;

@@ -46,16 +46,16 @@ class WebTVAutoPlaylistService
                     'mode' => 'live',
                     'live_stream' => $liveStatus['stream_id']
                 ];
-            } else {
+                    } else {
                 // Pas de live - démarrer les VoD automatiques
                 Log::info("🎥 Pas de live - Démarrage des VoD automatiques");
                 
                 $vodResult = $this->startVodPlaylist($playlist);
                 
                 return [
-                    'success' => true,
+                'success' => true,
                     'message' => 'VoD automatiques démarrés',
-                    'mode' => 'vod',
+                'mode' => 'vod',
                     'vod_result' => $vodResult
                 ];
             }
@@ -70,17 +70,25 @@ class WebTVAutoPlaylistService
         }
     }
     
+    /** TTL du cache live status (évite de surcharger Ant Media et accélère current-url). */
+    private const LIVE_STATUS_CACHE_TTL_SECONDS = 2;
+
     /**
-     * Vérifier s'il y a un live en cours
+     * Vérifier s'il y a un live en cours (cache 2s + timeout 3s pour éviter lenteur API current-url).
      */
     public function checkLiveStatus(): array
     {
+        $cacheKey = 'webtv_live_status';
+        $cached = Cache::get($cacheKey);
+        if (is_array($cached) && array_key_exists('is_live', $cached)) {
+            return $cached;
+        }
         try {
-            // Vérifier les streams live actifs dans Ant Media Server
+            // Timeout court pour ne pas bloquer la page watch (évite "tens of seconds").
             $response = Http::withBasicAuth(
                 config('app.webtv_stream_username'),
                 config('app.webtv_stream_password')
-            )->get('http://localhost:5080/LiveApp/rest/v2/broadcasts/list/0/10');
+            )->timeout(3)->connectTimeout(2)->get('http://localhost:5080/LiveApp/rest/v2/broadcasts/list/0/10');
             
             if ($response->successful()) {
                 $streams = $response->json();
@@ -88,29 +96,33 @@ class WebTVAutoPlaylistService
                 // Chercher un stream live actif
                 foreach ($streams as $stream) {
                     if (($stream['type'] === 'live' || $stream['type'] === 'liveStream') && $stream['status'] === 'broadcasting') {
-                        return [
+                        $result = [
                             'is_live' => true,
                             'stream_id' => $stream['streamId'],
                             'stream_name' => $stream['name']
                         ];
+                        Cache::put($cacheKey, $result, now()->addSeconds(self::LIVE_STATUS_CACHE_TTL_SECONDS));
+                        return $result;
                     }
                 }
             }
-            
-            return [
+            $result = [
                 'is_live' => false,
                 'stream_id' => '',
                 'stream_name' => ''
             ];
-            
+            Cache::put($cacheKey, $result, now()->addSeconds(self::LIVE_STATUS_CACHE_TTL_SECONDS));
+            return $result;
+
         } catch (\Exception $e) {
             Log::error("❌ Erreur vérification live status: " . $e->getMessage());
-            
-            return [
+            $result = [
                 'is_live' => false,
                 'stream_id' => '',
                 'stream_name' => ''
             ];
+            Cache::put($cacheKey, $result, now()->addSeconds(self::LIVE_STATUS_CACHE_TTL_SECONDS));
+            return $result;
         }
     }
     
@@ -152,7 +164,7 @@ class WebTVAutoPlaylistService
                 'playlist_id' => $playlist->id,
                 'items_count' => count($playlistData)
             ]);
-            
+
             return [
                 'success' => true,
                 'message' => 'Playlist VoD automatique créée',
@@ -162,7 +174,7 @@ class WebTVAutoPlaylistService
             
         } catch (\Exception $e) {
             Log::error("❌ Erreur création playlist VoD: " . $e->getMessage());
-            
+
             return [
                 'success' => false,
                 'message' => 'Erreur lors de la création de la playlist VoD: ' . $e->getMessage()
@@ -181,18 +193,18 @@ class WebTVAutoPlaylistService
             if ($liveStatus['is_live']) {
                 // Live en cours - arrêter les VoD automatiques
                 Log::info("📺 Live détecté - Arrêt des VoD automatiques");
-                
-                return [
+
+                        return [
                     'success' => true,
                     'message' => 'Live détecté - VoD automatiques arrêtés',
                     'mode' => 'live',
                     'live_stream' => $liveStatus['stream_id']
                 ];
-            } else {
+                } else {
                 // Pas de live - maintenir les VoD automatiques
                 Log::info("🎥 Pas de live - Maintien des VoD automatiques");
-                
-                return [
+                            
+                            return [
                     'success' => true,
                     'message' => 'Pas de live - VoD automatiques maintenus',
                     'mode' => 'vod'
@@ -216,7 +228,7 @@ class WebTVAutoPlaylistService
     {
         try {
             $liveStatus = $this->checkLiveStatus();
-            
+
             return [
                 'success' => true,
                 'message' => $liveStatus['is_live'] ? 'Live en cours' : 'VoD actif',
@@ -228,7 +240,7 @@ class WebTVAutoPlaylistService
             
         } catch (\Exception $e) {
             Log::error("❌ Erreur statut playlist automatique: " . $e->getMessage());
-            
+
             return [
                 'success' => false,
                 'message' => 'Erreur lors de la récupération du statut: ' . $e->getMessage()
@@ -245,7 +257,7 @@ class WebTVAutoPlaylistService
         try {
             $activePlaylist = WebTVPlaylist::where('is_active', true)->first();
             if (!$activePlaylist) {
-                return [
+                    return [
                     'success' => false,
                     'message' => 'Aucune playlist active',
                     'current_item' => ['item_id' => null, 'current_time' => 0.0],
@@ -254,8 +266,8 @@ class WebTVAutoPlaylistService
             $cacheKey = 'webtv_unified_sync_position_' . $activePlaylist->id;
             $cached = Cache::get($cacheKey);
             if (is_array($cached) && isset($cached['item_id'])) {
-                return [
-                    'success' => true,
+            return [
+                'success' => true,
                     'current_item' => [
                         'item_id' => (int) $cached['item_id'],
                         'current_time' => (float) ($cached['current_time'] ?? 0),
@@ -285,7 +297,7 @@ class WebTVAutoPlaylistService
             ];
         }
     }
-
+    
     /**
      * Contexte de lecture (live ou VoD) pour le flux unifié.
      * Utilisé par UnifiedStreamController::getUnifiedHLS et UnifiedHlsBuilder::build.
@@ -352,7 +364,7 @@ class WebTVAutoPlaylistService
                 $currentTime = 0.0;
             }
             $context = [
-                'success' => true,
+                    'success' => true,
                 'mode' => 'vod',
                 'sequence' => ['items' => $sequence],
                 'current_item' => ['item_id' => $currentItemId, 'current_time' => $currentTime],
@@ -380,7 +392,7 @@ class WebTVAutoPlaylistService
             return ['success' => false, 'message' => $e->getMessage()];
         }
     }
-
+    
     /**
      * Reprendre le système (sortie du mode paused).
      */
@@ -407,11 +419,19 @@ class WebTVAutoPlaylistService
         ], $urlData);
     }
 
+    /** TTL cache pour getCurrentPlaybackUrl (aligné sur playback_context, réduit charge et latence page watch). */
+    private const CURRENT_PLAYBACK_URL_CACHE_TTL_SECONDS = 2;
+
     /**
-     * Obtenir l'URL de lecture actuelle (live ou VoD)
+     * Obtenir l'URL de lecture actuelle (live ou VoD). Cache 2s pour réactivité de la page watch.
      */
     public function getCurrentPlaybackUrl(): array
     {
+        $cacheKey = 'webtv_current_playback_url_' . floor(time() / self::CURRENT_PLAYBACK_URL_CACHE_TTL_SECONDS);
+        $cached = Cache::get($cacheKey);
+        if (is_array($cached) && isset($cached['success'])) {
+            return $cached;
+        }
         try {
             $liveStatus = $this->checkLiveStatus();
             
@@ -419,7 +439,7 @@ class WebTVAutoPlaylistService
                 // Mode LIVE - Inchangé
                 $liveUrl = "http://15.235.86.98:5080/LiveApp/play.html?name=" . $liveStatus['stream_id'];
                 
-                return [
+                $result = [
                     'success' => true,
                     'message' => 'Live stream available',
                     'mode' => 'live',
@@ -427,28 +447,50 @@ class WebTVAutoPlaylistService
                     'stream_id' => $liveStatus['stream_id'],
                     'stream_name' => $liveStatus['stream_name']
                 ];
+                Cache::put($cacheKey, $result, now()->addSeconds(self::CURRENT_PLAYBACK_URL_CACHE_TTL_SECONDS + 1));
+                return $result;
             } else {
                 // Mode VoD : utiliser le flux unifié (unified.m3u8) déjà généré par UnifiedHlsBuilder.
                 // Ce flux contient les segments VoD quand il n'y a pas de live — pas besoin de FFmpegHLSService.
                 $unifiedStreamUrl = 'https://tv.embmission.com/hls/streams/unified.m3u8';
 
-                return [
+                $result = [
                     'success' => true,
                     'message' => 'Stream unifié disponible (VoD)',
                     'mode' => 'vod',
                     'url' => $unifiedStreamUrl,
                     'format' => 'HLS (M3U8)',
-                    'continuous' => true
+                    'continuous' => true,
                 ];
+
+                // Enrichir avec item_id, current_time, duration pour la page watch (éviter fausse détection fin de vidéo / freeze)
+                $context = $this->getCurrentPlaybackContext();
+                if (($context['mode'] ?? '') === 'vod' && !empty($context['current_item']) && !empty($context['sequence']['items'])) {
+                    $currentId = $context['current_item']['item_id'] ?? null;
+                    $currentTime = (float) ($context['current_item']['current_time'] ?? 0);
+                    $duration = 0;
+                    foreach ($context['sequence']['items'] as $item) {
+                        if (($item['item_id'] ?? null) === $currentId) {
+                            $duration = (float) ($item['duration'] ?? 0);
+                            break;
+                        }
+                    }
+                    $result['item_id'] = $currentId;
+                    $result['current_time'] = $currentTime;
+                    $result['duration'] = $duration;
+                }
+
+                Cache::put($cacheKey, $result, now()->addSeconds(self::CURRENT_PLAYBACK_URL_CACHE_TTL_SECONDS + 1));
+                return $result;
             }
-            
         } catch (\Exception $e) {
             Log::error("❌ Erreur récupération URL de lecture: " . $e->getMessage());
-            
-            return [
+            $err = [
                 'success' => false,
                 'message' => 'Erreur lors de la récupération de l\'URL de lecture: ' . $e->getMessage()
             ];
+            Cache::put($cacheKey, $err, now()->addSeconds(5));
+            return $err;
         }
     }
     
@@ -473,18 +515,18 @@ class WebTVAutoPlaylistService
             $activePlaylist = WebTVPlaylist::where('is_active', true)->first();
             
             if (!$activePlaylist) {
-                return [
-                    'success' => false,
+            return [
+                'success' => false,
                     'message' => 'Aucune playlist active'
                 ];
             }
             
             // Récupérer les items de la playlist
             $vodItems = $activePlaylist->items()
-                ->where('sync_status', 'synced')
-                ->orderBy('order')
-                ->get();
-            
+            ->where('sync_status', 'synced')
+            ->orderBy('order')
+            ->get();
+
             if ($vodItems->isEmpty()) {
                 return [
                     'success' => false,
@@ -555,7 +597,7 @@ class WebTVAutoPlaylistService
                         $currentPosition = 0;
                         $nextItem = $vodItems[0];
                     } else {
-                        return [
+                return [
                             'success' => false,
                             'message' => 'Fin de la playlist'
                         ];
@@ -571,7 +613,7 @@ class WebTVAutoPlaylistService
             $vodInfo = $this->vodService->checkVoD($nextItem);
             
             if (!$vodInfo['success']) {
-                return [
+        return [
                     'success' => false,
                     'message' => 'Erreur lors de la récupération du VoD: ' . ($vodInfo['message'] ?? 'Unknown error')
                 ];
