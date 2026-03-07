@@ -21,7 +21,11 @@ Schedule::command('webtv:check-sync --fix --alert')
 Schedule::command('webtv:link-preconverted --limit=100')
     ->everyTwoMinutes()
     ->withoutOverlapping();
-
+// Avancer la position de lecture du flux unifié (chaîne TV) chaque minute
+Schedule::command('webtv:advance-sync-position')
+    ->everyMinute()
+    ->withoutOverlapping();
+    
 // Relancer les conversions HLS échouées ou incomplètes (toutes les 15 minutes)
 // Limité aux fichiers des dernières 48h pour optimiser les performances
 Schedule::job(new \App\Jobs\RetryFailedVideoConversions())

@@ -17,6 +17,12 @@ class UnifiedHlsBuilder
      */
     private int $windowSize = 25;
 
+    /**
+     * Secondes en arrière par rapport à la position serveur pour inclure dans la playlist.
+     * Évite les sauts de lecture quand le client refait un GET sur le M3U8 après avance de position.
+     */
+    private float $backWindowSeconds = 20.0;
+
     private float $minSegmentDuration = 1.0; // secondes
 
     /**
@@ -27,6 +33,11 @@ class UnifiedHlsBuilder
     private string $outputAudioPath = '/usr/local/antmedia/webapps/LiveApp/streams/unified_audio.m3u8';
 
     private string $sequenceStateCacheKey = 'unified_hls_sequence_state';
+
+    /** Ne jamais reculer le début de la playlist au-delà de ce delta (évite sauts en arrière du player). */
+    private const MAX_BACKWARD_DRIFT_SECONDS = 5.0;
+
+    private string $lastStartOffsetCacheKey = 'unified_hls_last_start_offset';
 
     private string $sequenceStatePath;
 
@@ -166,17 +177,23 @@ class UnifiedHlsBuilder
         $steps = 0;
         $maxSteps = $loopEnabled ? $itemCount : ($itemCount - $startIndex);
         $firstItem = true;
+        // Démarrer un peu en arrière pour que le segment en cours du client reste dans la playlist au refetch
+        $computedOffset = $firstItem ? max(0.0, $currentTime - $this->backWindowSeconds) : 0.0;
+        $lastState = Cache::get($this->lastStartOffsetCacheKey);
+        $sameItem = is_array($lastState) && ($lastState['item_id'] ?? null) === $currentItemId;
+        $lastOffset = $sameItem ? (float) ($lastState['offset'] ?? 0) : 0;
+        $offset = $firstItem ? max($computedOffset, $lastOffset - self::MAX_BACKWARD_DRIFT_SECONDS) : 0.0;
 
         while (count($segments) < $this->windowSize && $steps < max($maxSteps, 1)) {
             $item = $sequence[$index];
             $parsed = $this->loadLegacyItemSegments($item);
 
             if ($parsed !== null) {
-                $offset = $firstItem ? $currentTime : 0.0;
+                $segmentOffset = $firstItem ? $offset : 0.0;
                 $needed = $this->windowSize - count($segments);
                 $slice = $this->sliceSegments(
                     $parsed,
-                    $offset,
+                    $segmentOffset,
                     $needed,
                     !$firstItem,
                     $item['item_id'] ?? null
@@ -204,6 +221,11 @@ class UnifiedHlsBuilder
                 break;
             }
         }
+
+        Cache::put($this->lastStartOffsetCacheKey, [
+            'item_id' => $currentItemId,
+            'offset' => $offset,
+        ], now()->addHours(1));
 
         return $this->applyLegacyStableSequences($segments, $context);
     }
@@ -238,6 +260,11 @@ class UnifiedHlsBuilder
         $steps = 0;
         $maxSteps = $loopEnabled ? $itemCount : ($itemCount - $startIndex);
         $firstItem = true;
+        $computedOffset = $firstItem ? max(0.0, $currentTime - $this->backWindowSeconds) : 0.0;
+        $lastState = Cache::get($this->lastStartOffsetCacheKey);
+        $sameItem = is_array($lastState) && ($lastState['item_id'] ?? null) === $currentItemId;
+        $lastOffset = $sameItem ? (float) ($lastState['offset'] ?? 0) : 0;
+        $offset = $firstItem ? max($computedOffset, $lastOffset - self::MAX_BACKWARD_DRIFT_SECONDS) : 0.0;
 
         while (count($videoTimeline) < $this->windowSize && $steps < max($maxSteps, 1)) {
             $item = $sequence[$index];
@@ -259,11 +286,11 @@ class UnifiedHlsBuilder
                 $masterInfo = $parsed['master'];
             }
 
-            $offset = $firstItem ? $currentTime : 0.0;
+            $segmentOffset = $firstItem ? $offset : 0.0;
             $needed = $this->windowSize - count($videoTimeline);
             $slice = $this->sliceShakaSegments(
                 $parsed,
-                $offset,
+                $segmentOffset,
                 $needed,
                 !$firstItem
             );
@@ -297,6 +324,11 @@ class UnifiedHlsBuilder
         if (empty($videoTimeline) || empty($audioTimeline)) {
             return null;
         }
+
+        Cache::put($this->lastStartOffsetCacheKey, [
+            'item_id' => $currentItemId,
+            'offset' => $offset,
+        ], now()->addHours(1));
 
         $tracks = $this->applyShakaStableSequences($videoTimeline, $audioTimeline, $context);
 
@@ -430,20 +462,24 @@ class UnifiedHlsBuilder
 
         $this->ensureOutputDirectory();
         
+        // ✅ Continuité MEDIA-SEQUENCE : ne jamais repartir de 0 (Zéro Erreur Transition HLS)
+        $mediaSequence = $this->getCurrentMediaSequence();
+        $state = $this->loadSequenceState();
+        $state['last_mode'] = 'live';
+        $state['media_sequence'] = $mediaSequence;
+        $state['updated_at'] = time();
+        $this->saveSequenceState($state);
+        
         // ✅ Créer un fichier minimal qui pointe vers le service direct
-        // Le contrôleur servira le contenu validé en temps réel
         $playlistContent = "#EXTM3U\n";
         $playlistContent .= "#EXT-X-VERSION:3\n";
         $playlistContent .= "#EXT-X-TARGETDURATION:2\n";
-        $playlistContent .= "#EXT-X-MEDIA-SEQUENCE:0\n";
+        $playlistContent .= "#EXT-X-MEDIA-SEQUENCE:{$mediaSequence}\n";
         $playlistContent .= "#EXT-X-PLAYLIST-TYPE:LIVE\n";
         $playlistContent .= "# Note: Ce fichier est servi dynamiquement par UnifiedStreamController\n";
         $playlistContent .= "# avec validation des segments en temps réel\n";
         
-        // Sauvegarder l'état pour la prochaine transition
-        Cache::put($this->sequenceStateCacheKey, [
-            'last_mode' => 'live',
-        ], 3600);
+        // (État déjà sauvegardé ci-dessus pour transition VoD → Live)
         
         $written = file_put_contents($this->outputPath, $playlistContent) !== false;
         
@@ -481,7 +517,7 @@ class UnifiedHlsBuilder
         return $written;
     }
 
-    private function getCurrentMediaSequence(): int
+    public function getCurrentMediaSequence(): int
     {
         $cacheKey = $this->sequenceStateCacheKey;
         $state = Cache::get($cacheKey);
@@ -491,6 +527,78 @@ class UnifiedHlsBuilder
         }
 
         return 0;
+    }
+
+    /**
+     * Retourne le dernier mode servi (live ou vod) pour les transitions DISCONTINUITY.
+     */
+    public function getLastMode(): ?string
+    {
+        $state = $this->loadSequenceState();
+        $mode = $state['last_mode'] ?? null;
+        return is_string($mode) ? $mode : null;
+    }
+
+    /**
+     * Met à jour l'état de séquence après avoir servi une playlist live (MEDIA-SEQUENCE continue).
+     */
+    public function updateSequenceStateForLive(int $mediaSequence): void
+    {
+        $state = $this->loadSequenceState();
+        $state['last_mode'] = 'live';
+        $state['media_sequence'] = $mediaSequence;
+        $state['updated_at'] = time();
+        $this->saveSequenceState($state);
+    }
+
+    /**
+     * Retourne une URI de segment connue pour une playlist minimale (transition sans erreur).
+     */
+    public function getLastKnownSegmentUri(): ?string
+    {
+        $state = $this->loadSequenceState();
+        $uriMap = $state['legacy']['uri_map'] ?? [];
+        if (empty($uriMap)) {
+            return null;
+        }
+        $last = end($uriMap);
+        $maxSeq = is_array($last) ? (int) ($last['sequence'] ?? 0) : 0;
+        foreach ($uriMap as $uri => $data) {
+            if ((int) ($data['sequence'] ?? 0) >= $maxSeq) {
+                $maxSeq = (int) ($data['sequence'] ?? 0);
+            }
+        }
+        foreach ($uriMap as $uri => $data) {
+            if ((int) ($data['sequence'] ?? 0) === $maxSeq) {
+                return $uri;
+            }
+        }
+        return array_key_first($uriMap);
+    }
+
+    /**
+     * Playlist HLS minimale valide (au moins un segment si possible) pour transition sans erreur.
+     */
+    public function getMinimalPlaylistContent(): string
+    {
+        $mediaSequence = $this->getCurrentMediaSequence();
+        $segmentUri = $this->getLastKnownSegmentUri();
+        $lines = [
+            '#EXTM3U',
+            '#EXT-X-VERSION:3',
+            '#EXT-X-TARGETDURATION:10',
+            '#EXT-X-MEDIA-SEQUENCE:' . $mediaSequence,
+            '#EXT-X-INDEPENDENT-SEGMENTS',
+        ];
+        if ($segmentUri !== null && $segmentUri !== '') {
+            $absoluteUri = Str::startsWith($segmentUri, ['http://', 'https://'])
+                ? $segmentUri
+                : $this->makeAbsoluteUrl($segmentUri);
+            $lines[] = '#EXTINF:10.000000,';
+            $lines[] = $absoluteUri;
+        }
+        $lines[] = '#EXT-X-ENDLIST';
+        return implode("\n", $lines) . "\n";
     }
 
     private function findItemIndex(array $sequence, int $itemId): int

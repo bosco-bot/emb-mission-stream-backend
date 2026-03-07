@@ -91,10 +91,22 @@ class WebTVAutoPlaylistController extends Controller
     {
         try {
             $result = $this->autoPlaylistService->getCurrentPlaybackUrl();
-            
+
+            if (config('app.debug')) {
+                Log::debug('[WATCH] current-url', [
+                    'mode' => $result['mode'] ?? null,
+                    'item_id' => $result['item_id'] ?? null,
+                    'current_time' => $result['current_time'] ?? null,
+                    'duration' => $result['duration'] ?? null,
+                ]);
+            }
+
             // ✅ CORRECTION: Éviter double imbrication des données
             if (isset($result['data'])) {
-                return response()->json($result, $result['success'] ? 200 : 400);
+                return response()->json($result, $result['success'] ? 200 : 400)
+                    ->header('Cache-Control', 'no-cache, no-store, must-revalidate')
+                    ->header('Pragma', 'no-cache')
+                    ->header('Expires', '0');
             }
             
             // Structure plate
@@ -102,8 +114,11 @@ class WebTVAutoPlaylistController extends Controller
                 'success' => $result['success'],
                 'message' => $result['message'],
                 'data' => $result
-            ], $result['success'] ? 200 : 400);
-            
+            ], $result['success'] ? 200 : 400)
+                ->header('Cache-Control', 'no-cache, no-store, must-revalidate')
+                ->header('Pragma', 'no-cache')
+                ->header('Expires', '0');
+
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,

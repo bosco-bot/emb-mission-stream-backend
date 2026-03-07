@@ -1445,8 +1445,8 @@ class MediaController extends Controller
                 $vodDir = $streamsBase . '/' . $vodName;
                 $playlistPath = $vodDir . '/playlist.m3u8';
                 
-                // Vérifier si le fichier source existe
-                $sourcePath = storage_path('app/media/' . $mediaFile->file_path);
+                // Vérifier si le fichier source existe (même résolution que le disque 'media')
+                $sourcePath = Storage::disk('media')->path($mediaFile->file_path);
                 $sourceExists = file_exists($sourcePath);
                 
                 // Déterminer le statut de conversion

@@ -56,6 +56,7 @@ Route::get("/watch", function () { return view("watch"); });
 
 Route::get("/watch-new", function () { return view("watch-new"); }); // ✅ Test transition backend
 Route::get("/player", function () { return view("player"); });
+// Embed YouTube pour chaînes partenaires : /embed ou /embed/VIDEO_ID ou /embed?id=VIDEO_ID
 Route::get('/embed/{videoId?}', \App\Http\Controllers\EmbedController::class)->name('embed.youtube');
 
 // Route pour générer le fichier M3U pour WebRadio

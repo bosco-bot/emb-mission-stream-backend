@@ -1,0 +1,24 @@
+{
+  "resources/css/app.css": {
+    "file": "assets/app-C7_hR9WO.css",
+    "src": "resources/css/app.css",
+    "isEntry": true
+  },
+  "resources/css/watch.css": {
+    "file": "assets/watch-8i4ht7JS.css",
+    "src": "resources/css/watch.css",
+    "isEntry": true
+  },
+  "resources/js/app.js": {
+    "file": "assets/app-BDy-bUPe.js",
+    "name": "app",
+    "src": "resources/js/app.js",
+    "isEntry": true
+  },
+  "resources/js/watch-page.js": {
+    "file": "assets/watch-page-B0D4geO1.js",
+    "name": "watch-page",
+    "src": "resources/js/watch-page.js",
+    "isEntry": true
+  }
+}

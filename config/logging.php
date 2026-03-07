@@ -134,6 +134,13 @@ return [
             'days' => 7,
         ],
 
+        'playback_metrics' => [
+            'driver' => 'single',
+            'path' => storage_path('logs/playback-metrics.log'),
+            'level' => 'info',
+            'replace_placeholders' => true,
+        ],
+
     ],
 
 ];

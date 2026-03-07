@@ -104,7 +104,14 @@ class UnifiedStreamController extends Controller
             
             // ✅ SOLUTION HYBRIDE : Filtrer la playlist Ant Media en gardant ses métadonnées exactes
             // On utilise les vraies durées et timestamps d'Ant Media mais on ne garde que les segments qui existent
-            $validatedContent = $this->filterPlaylistWithOriginalMetadata($content, $streamId);
+            // ✅ Zéro Erreur Transition : DISCONTINUITY VoD→Live et MEDIA-SEQUENCE continue
+            $lastMode = $this->fallbackBuilder->getLastMode();
+            $minMediaSequence = $this->fallbackBuilder->getCurrentMediaSequence();
+            $result = $this->filterPlaylistWithOriginalMetadata($content, $streamId, [
+                'inject_discontinuity' => ($lastMode === 'vod'),
+                'min_media_sequence' => $minMediaSequence,
+            ]);
+            $validatedContent = $result['content'];
             
             if (empty($validatedContent)) {
                 // Fallback : servir l'original si la validation échoue complètement
@@ -112,6 +119,8 @@ class UnifiedStreamController extends Controller
                     'stream_id' => $streamId,
                 ]);
                 $validatedContent = $content;
+            } else {
+                $this->fallbackBuilder->updateSequenceStateForLive($result['media_sequence']);
             }
             
             // ✅ Servir la playlist validée avec les métadonnées originales d'Ant Media
@@ -139,8 +148,11 @@ class UnifiedStreamController extends Controller
      * Cette méthode lit la playlist d'Ant Media avec ses vraies métadonnées (durées, timestamps)
      * et ne garde que les segments qui existent vraiment sur le disque.
      * On garde TOUTES les métadonnées originales d'Ant Media pour éviter les erreurs de parsing.
+     *
+     * @param array $options inject_discontinuity (bool) pour VoD→Live, min_media_sequence (int) pour continuité
+     * @return array{content: string, media_sequence: int}
      */
-    private function filterPlaylistWithOriginalMetadata(string $content, string $streamId): string
+    private function filterPlaylistWithOriginalMetadata(string $content, string $streamId, array $options = []): array
     {
         $lines = explode("\n", $content);
         $streamsDir = '/usr/local/antmedia/webapps/LiveApp/streams/';
@@ -230,7 +242,7 @@ class UnifiedStreamController extends Controller
         
         // ✅ Ne garder que les 2-3 derniers segments valides (les plus récents)
         if (empty($validSegments)) {
-            return '';
+            return ['content' => '', 'media_sequence' => 0];
         }
         
         // ✅ Trier les segments par numéro de séquence pour s'assurer d'avoir les plus récents
@@ -251,7 +263,7 @@ class UnifiedStreamController extends Controller
         $selectedSegments = array_slice($validSegments, -$maxSegments);
         
         if (empty($selectedSegments)) {
-            return '';
+            return ['content' => '', 'media_sequence' => 0];
         }
         
         // Recalculer MEDIA-SEQUENCE depuis le premier segment sélectionné
@@ -261,18 +273,23 @@ class UnifiedStreamController extends Controller
         if (preg_match('/' . preg_quote($streamId, '/') . '0+(\d+)\.ts$/', $firstSegment, $matches)) {
             $mediaSequence = (int)$matches[1];
         } else {
-            // ✅ Fallback : utiliser 0 si on ne peut pas extraire le numéro
-            // MEDIA-SEQUENCE est OBLIGATOIRE pour les playlists HLS LIVE
-            // Certains lecteurs (notamment Flutter Web) sont stricts et exigent cette balise
-            $mediaSequence = 0;
+            // ✅ Continuité MEDIA-SEQUENCE (Zéro Erreur Transition HLS) : ne jamais reculer
+            $minMediaSequence = isset($options['min_media_sequence']) ? (int) $options['min_media_sequence'] : null;
+            if ($minMediaSequence !== null) {
+                $mediaSequence = max($mediaSequence, $minMediaSequence);
+            }
         }
+        
+        $injectDiscontinuity = !empty($options['inject_discontinuity']);
         
         // ✅ Reconstruire la playlist avec les métadonnées ORIGINALES d'Ant Media
         $outputLines[] = '#EXTM3U';
         $outputLines[] = "#EXT-X-VERSION:{$version}";
         $outputLines[] = $targetDuration !== null ? "#EXT-X-TARGETDURATION:{$targetDuration}" : '#EXT-X-TARGETDURATION:2';
-        // ✅ TOUJOURS inclure MEDIA-SEQUENCE (obligatoire pour HLS LIVE, notamment pour Flutter Web)
         $outputLines[] = "#EXT-X-MEDIA-SEQUENCE:{$mediaSequence}";
+        if ($injectDiscontinuity) {
+            $outputLines[] = '#EXT-X-DISCONTINUITY';
+        }
         $outputLines[] = '#EXT-X-PLAYLIST-TYPE:LIVE';
         
         // Ajouter chaque segment avec ses métadonnées ORIGINALES d'Ant Media
@@ -291,7 +308,7 @@ class UnifiedStreamController extends Controller
             'media_sequence' => $mediaSequence,
         ]);
         
-        return $playlistContent;
+        return ['content' => $playlistContent, 'media_sequence' => $mediaSequence];
     }
     
     /**
@@ -957,6 +974,30 @@ class UnifiedStreamController extends Controller
     }
 
     /**
+     * Générer un HLS d'erreur
+     */
+    private function generateErrorHLS(string $message): Response
+    {
+        $errorM3u8 = "#EXTM3U\n";
+        $errorM3u8 .= "#EXT-X-VERSION:3\n";
+        $errorM3u8 .= "#EXT-X-TARGETDURATION:10\n";
+        $errorM3u8 .= "#EXT-X-MEDIA-SEQUENCE:0\n";
+        $errorM3u8 .= "#EXT-X-PLAYLIST-TYPE:VOD\n";
+        $errorM3u8 .= "#EXTINF:10,Erreur\n";
+        $errorM3u8 .= "# " . $message . "\n";
+        $errorM3u8 .= "#EXT-X-ENDLIST\n";
+
+        return response($errorM3u8, 200, [
+            'Content-Type' => 'application/vnd.apple.mpegurl; charset=utf-8',
+            'Cache-Control' => 'no-cache, no-store, must-revalidate, private',
+            'Pragma' => 'no-cache',
+            'Expires' => '0',
+            'X-Served-By' => 'Laravel-UnifiedStream',
+            // Les en-têtes CORS sont gérés par le middleware HandleCors de Laravel
+        ]);
+    }
+
+    /**
      * Détecte si le fichier unified.m3u8 est le placeholder live (sans segments .ts).
      * Après une transition Live → VOD, le worker peut ne pas avoir encore réécrit le fichier.
      */
@@ -973,7 +1014,7 @@ class UnifiedStreamController extends Controller
                 Log::warning('⚠️ Playlist unifiée absente - tentative de régénération à la volée');
 
                 if (!$this->fallbackBuilder->build()) {
-                    return $this->generateErrorHLS('Flux en cours de préparation, réessayez');
+                    return $this->respondMinimalPlaylist();
                 }
             }
 
@@ -994,7 +1035,7 @@ class UnifiedStreamController extends Controller
                     $content = @file_get_contents($this->unifiedPlaylistPath);
                 }
                 if ($content === false || $content === '' || $this->isUnifiedPlaylistLivePlaceholder($content)) {
-                    return $this->generateErrorHLS('Flux en cours de préparation, réessayez');
+                    return $this->respondMinimalPlaylist();
                 }
             }
 
@@ -1011,6 +1052,23 @@ class UnifiedStreamController extends Controller
             Log::error('❌ Erreur lecture playlist unifiée: ' . $e->getMessage());
             return $this->generateErrorHLS('Erreur flux unifié');
         }
+    }
+
+    /**
+     * Réponse 200 avec une playlist HLS minimale valide (Zéro Erreur Transition).
+     * Utilisée quand le flux est en cours de préparation pour garder la session ouverte.
+     */
+    private function respondMinimalPlaylist(): Response
+    {
+        $content = $this->fallbackBuilder->getMinimalPlaylistContent();
+        return response($content, 200, [
+            'Content-Type' => 'application/vnd.apple.mpegurl; charset=utf-8',
+            'Cache-Control' => 'no-cache, no-store, must-revalidate, private',
+            'Pragma' => 'no-cache',
+            'Expires' => '0',
+            'X-Content-Type-Options' => 'nosniff',
+            'X-Served-By' => 'Laravel-UnifiedStream',
+        ]);
     }
 
     /**
@@ -1205,10 +1263,11 @@ class UnifiedStreamController extends Controller
             ]);
 
             return response($m3u8Content, 200, [
-                'Content-Type' => 'application/x-mpegURL',
-                'Cache-Control' => 'no-cache, no-store, must-revalidate',
+                'Content-Type' => 'application/vnd.apple.mpegurl; charset=utf-8',
+                'Cache-Control' => 'no-cache, no-store, must-revalidate, private',
                 'Pragma' => 'no-cache',
                 'Expires' => '0',
+                'X-Content-Type-Options' => 'nosniff',
                 'X-Served-By' => 'Laravel-UnifiedStream',
                 // Les en-têtes CORS sont gérés par le middleware HandleCors de Laravel
             ]);
@@ -1384,25 +1443,5 @@ class UnifiedStreamController extends Controller
         });
     }
 
-    /**
-     * Générer un HLS d’erreur
-     */
-    private function generateErrorHLS(string $message): Response
-    {
-        $errorM3u8 = "#EXTM3U\n";
-        $errorM3u8 .= "#EXT-X-VERSION:3\n";
-        $errorM3u8 .= "#EXT-X-TARGETDURATION:10\n";
-        $errorM3u8 .= "#EXT-X-MEDIA-SEQUENCE:0\n";
-        $errorM3u8 .= "#EXT-X-PLAYLIST-TYPE:VOD\n";
-        $errorM3u8 .= "#EXTINF:10,Erreur\n";
-        $errorM3u8 .= "# " . $message . "\n";
-        $errorM3u8 .= "#EXT-X-ENDLIST\n";
-
-        return response($errorM3u8, 200, [
-            'Content-Type' => 'application/vnd.apple.mpegurl',
-            'Cache-Control' => 'no-cache',
-            'X-Served-By' => 'Laravel-UnifiedStream',
-            // Les en-têtes CORS sont gérés par le middleware HandleCors de Laravel
-        ]);
-    }
+    
 }
