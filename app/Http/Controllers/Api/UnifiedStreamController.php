@@ -63,6 +63,13 @@ class UnifiedStreamController extends Controller
                 return $this->serveLivePlaylistDirectly($streamId);
             }
 
+            // ✅ Mode pause : forcer l'écriture d'une playlist minimale puis la servir
+            if (($context['mode'] ?? '') === 'paused') {
+                Log::info("⏸️ Mode Pause détecté - playlist unifiée en pause");
+                $this->fallbackBuilder->build();
+                return $this->serveUnifiedPlaylist();
+            }
+
             Log::info("📺 Mode VoD détecté - utilisation de la playlist unifiée générée");
             return $this->serveUnifiedPlaylist();
         } catch (\Exception $e) {

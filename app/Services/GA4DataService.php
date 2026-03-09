@@ -88,7 +88,12 @@ class GA4DataService
             return $totalCount;
             
         } catch (\Exception $e) {
-            Log::error('GA4 getEventCount error: ' . $e->getMessage());
+            Log::error('GA4 getEventCount error: ' . $e->getMessage(), [
+                'event_name' => $eventName,
+                'property_id' => $this->propertyId,
+                'exception_class' => get_class($e),
+                'trace' => $e->getTraceAsString(),
+            ]);
             return 0;
         }
     }
@@ -147,7 +152,12 @@ class GA4DataService
             return $statsByCountry;
             
         } catch (\Exception $e) {
-            Log::error('GA4 getStatsByCountry error: ' . $e->getMessage());
+            Log::error('GA4 getStatsByCountry error: ' . $e->getMessage(), [
+                'event_name' => $eventName,
+                'property_id' => $this->propertyId,
+                'exception_class' => get_class($e),
+                'trace' => $e->getTraceAsString(),
+            ]);
             return [];
         }
     }

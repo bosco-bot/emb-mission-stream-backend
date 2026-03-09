@@ -145,6 +145,7 @@ Route::prefix('system-monitoring')->group(function () {
     Route::get('/', [App\Http\Controllers\Admin\MonitoringController::class, 'index'])->name('system-monitoring.index');
     Route::get('/status', [App\Http\Controllers\Admin\MonitoringController::class, 'getStatus'])->name('system-monitoring.status');
     Route::post('/restart-service', [App\Http\Controllers\Admin\MonitoringController::class, 'restartService'])->name('system-monitoring.restart-service');
+    Route::post('/stop-service', [App\Http\Controllers\Admin\MonitoringController::class, 'stopService'])->name('system-monitoring.stop-service');
     Route::post('/retry-job', [App\Http\Controllers\Admin\MonitoringController::class, 'retryJob'])->name('system-monitoring.retry-job');
     Route::post('/retry-all-jobs', [App\Http\Controllers\Admin\MonitoringController::class, 'retryAllFailedJobs'])->name('system-monitoring.retry-all-jobs');
 });

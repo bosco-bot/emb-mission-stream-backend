@@ -48,4 +48,25 @@ function testProperty($propertyId, $name) {
 testProperty($radioId, "Web Radio");
 testProperty($tvId, "Web TV");
 
+echo "\n3. Report Tests (getEventCount + getStatsByCountry) – same calls as in production:\n";
+
+function testReports($propertyId, $name) {
+    if (!$propertyId) {
+        echo "   - $name: Skipped (No ID)\n";
+        return;
+    }
+    try {
+        $service = new \App\Services\GA4DataService($propertyId);
+        $n = $service->getEventCount('radio_play', 30);
+        echo "   - $name getEventCount(radio_play): ✅ $n\n";
+        $countries = $service->getStatsByCountry('radio_play', 30);
+        echo "   - $name getStatsByCountry(radio_play): ✅ " . count($countries) . " countries\n";
+    } catch (\Throwable $e) {
+        echo "   - $name: ❌ " . $e->getMessage() . "\n";
+    }
+}
+
+testReports($radioId, "Web Radio");
+testReports($tvId, "Web TV");
+
 echo "\nDone.\n";

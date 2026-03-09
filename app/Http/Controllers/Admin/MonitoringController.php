@@ -33,6 +33,11 @@ class MonitoringController extends Controller
                 'cron_tasks' => $this->getCronTasks(),
                 'audio_jobs' => $this->getAudioJobs(),
                 'rtmp_alerts' => $this->getRtmpAlerts(),
+                'disk' => $this->getDiskSpace(),
+                'laravel_log_errors' => $this->getLaravelLogErrors(),
+                'storage_links' => $this->getStorageLinksStatus(),
+                'versions' => $this->getVersions(),
+                'webtv_system_paused' => \Illuminate\Support\Facades\Cache::get('webtv_system_paused', false),
                 'timestamp' => now()->toIso8601String(),
             ];
 
@@ -56,7 +61,7 @@ class MonitoringController extends Controller
     {
         $services = [
             'nginx' => $this->checkService('nginx'),
-            'php-fpm' => $this->checkService('php8.1-fpm'),
+            'php-fpm' => $this->checkService('php8.2-fpm'),
             'mysql' => $this->checkService('mysql'),
             'antmedia' => $this->checkService('antmedia'),
             'ffmpeg-live-transcode' => $this->checkService('ffmpeg-live-transcode'),
@@ -183,7 +188,7 @@ class MonitoringController extends Controller
         ]);
 
         $serviceName = $request->input('service');
-        $allowedServices = ['nginx', 'php8.1-fpm', 'mysql', 'antmedia', 'ffmpeg-live-transcode', 'laravel-queue-worker', 'unified-stream', 'laravel-reverb', 'supervisor', 'cron', 'docker'];
+        $allowedServices = ['nginx', 'php8.2-fpm', 'mysql', 'antmedia', 'ffmpeg-live-transcode', 'laravel-queue-worker', 'unified-stream', 'laravel-reverb', 'supervisor', 'cron', 'docker'];
 
         if (!in_array($serviceName, $allowedServices)) {
             return response()->json([
@@ -194,7 +199,7 @@ class MonitoringController extends Controller
 
         try {
             // Vérifier les permissions (doit être exécuté en tant que root ou avec sudo)
-            $command = "systemctl restart {$serviceName} 2>&1";
+            $command = "sudo systemctl restart {$serviceName} 2>&1";
             exec($command, $output, $exitCode);
 
             if ($exitCode === 0) {
@@ -215,6 +220,52 @@ class MonitoringController extends Controller
             return response()->json([
                 'success' => false,
                 'error' => 'Erreur lors du redémarrage',
+            ], 500);
+        }
+    }
+
+    /**
+     * API : Arrête un service
+     */
+    public function stopService(Request $request): JsonResponse
+    {
+        $request->validate([
+            'service' => 'required|string',
+        ]);
+
+        $serviceName = $request->input('service');
+        $allowedServices = ['nginx', 'php8.2-fpm', 'mysql', 'antmedia', 'ffmpeg-live-transcode', 'laravel-queue-worker', 'unified-stream', 'laravel-reverb', 'supervisor', 'cron', 'docker'];
+
+        if (!in_array($serviceName, $allowedServices)) {
+            return response()->json([
+                'success' => false,
+                'error' => 'Service non autorisé',
+            ], 403);
+        }
+
+        try {
+            // Vérifier les permissions (doit être exécuté en tant que root ou avec sudo)
+            $command = "sudo systemctl stop {$serviceName} 2>&1";
+            exec($command, $output, $exitCode);
+
+            if ($exitCode === 0) {
+                Log::info("Service arrêté: {$serviceName}");
+                return response()->json([
+                    'success' => true,
+                    'message' => "Service {$serviceName} arrêté avec succès",
+                ]);
+            } else {
+                Log::warning("Échec arrêt service: {$serviceName}", ['output' => implode("\n", $output)]);
+                return response()->json([
+                    'success' => false,
+                    'error' => "Échec de l'arrêt: " . implode("\n", $output),
+                ], 500);
+            }
+        } catch (\Exception $e) {
+            Log::error("Erreur arrêt service {$serviceName}: " . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'error' => 'Erreur lors de l\'arrêt',
             ], 500);
         }
     }
@@ -263,7 +314,7 @@ class MonitoringController extends Controller
     {
         return [
             'nginx' => 'Serveur web Nginx - Gère les requêtes HTTP/HTTPS et le routage vers PHP-FPM',
-            'php-fpm' => 'PHP-FPM 8.1 - Interprète PHP pour exécuter les scripts Laravel',
+            'php-fpm' => 'PHP-FPM 8.2 - Interprète PHP pour exécuter les scripts Laravel',
             'mysql' => 'Base de données MySQL - Stocke toutes les données de l\'application',
             'antmedia' => 'Ant Media Server - Serveur de streaming vidéo en direct',
             'ffmpeg-live-transcode' => 'FFmpeg Live Transcode - Re-encode le flux live avec GOP de 2s pour Ant Media',
@@ -367,6 +418,136 @@ class MonitoringController extends Controller
                 'message' => trim($line),
             ];
         }, $lines);
+    }
+
+    /**
+     * Espace disque (partitions principales)
+     */
+    private function getDiskSpace(): array
+    {
+        $paths = [
+            ['path' => base_path('storage'), 'label' => 'Storage (logs, cache, médias)'],
+            ['path' => '/var', 'label' => '/var'],
+            ['path' => '/', 'label' => 'Racine'],
+        ];
+        $result = [];
+        foreach ($paths as $item) {
+            $path = $item['path'];
+            if (!@is_dir($path)) {
+                $result[] = ['path' => $path, 'label' => $item['label'], 'error' => 'Dossier inaccessible'];
+                continue;
+            }
+            $total = @disk_total_space($path);
+            $free = @disk_free_space($path);
+            if ($total === false || $free === false) {
+                $result[] = ['path' => $path, 'label' => $item['label'], 'error' => 'Impossible de lire l\'espace'];
+                continue;
+            }
+            $used = $total - $free;
+            $pct = $total > 0 ? round(100 * $used / $total, 1) : 0;
+            $result[] = [
+                'path' => $path,
+                'label' => $item['label'],
+                'total_gb' => round($total / (1024 ** 3), 2),
+                'free_gb' => round($free / (1024 ** 3), 2),
+                'used_gb' => round($used / (1024 ** 3), 2),
+                'used_percent' => $pct,
+                'ok' => $pct < 90,
+            ];
+        }
+        return $result;
+    }
+
+    /**
+     * Dernières lignes d'erreur du log Laravel (niveau ERROR uniquement, hors messages résolus)
+     */
+    private function getLaravelLogErrors(int $limit = 15): array
+    {
+        $logPath = storage_path('logs/laravel.log');
+        if (!is_file($logPath) || !is_readable($logPath)) {
+            return ['lines' => [], 'error' => 'Fichier log inaccessible'];
+        }
+        $content = @file_get_contents($logPath);
+        if ($content === false) {
+            return ['lines' => [], 'error' => 'Impossible de lire le log'];
+        }
+        $lines = array_filter(explode("\n", $content));
+        $errorLines = [];
+        foreach (array_reverse($lines) as $line) {
+            $line = trim($line);
+            if ($line === '') {
+                continue;
+            }
+            $lower = strtolower($line);
+            // Niveau ERROR uniquement (exclut WARNING, INFO, etc.)
+            if (strpos($line, '.ERROR:') === false && !preg_match('/\.ERROR\s*:/', $line)) {
+                continue;
+            }
+            // Exclure les erreurs connues/résolues (ex: getDiskSpace après déploiement)
+            if (strpos($lower, 'getdiskspace') !== false) {
+                continue;
+            }
+            $errorLines[] = ['text' => strlen($line) > 200 ? substr($line, 0, 200) . '…' : $line];
+            if (count($errorLines) >= $limit) {
+                break;
+            }
+        }
+        return ['lines' => array_reverse($errorLines)];
+    }
+
+    /**
+     * État des liens de stockage (symlinks)
+     */
+    private function getStorageLinksStatus(): array
+    {
+        $checks = [];
+        $publicStorage = public_path('storage');
+        $checks[] = [
+            'name' => 'public/storage',
+            'path' => $publicStorage,
+            'exists' => file_exists($publicStorage),
+            'is_link' => is_link($publicStorage),
+            'target' => is_link($publicStorage) ? @readlink($publicStorage) : null,
+        ];
+        $mediaLink = base_path('storage/app/public/media');
+        $checks[] = [
+            'name' => 'storage/app/public/media → media',
+            'path' => $mediaLink,
+            'exists' => file_exists($mediaLink),
+            'is_link' => is_link($mediaLink),
+            'target' => is_link($mediaLink) ? @readlink($mediaLink) : null,
+        ];
+        $mediaDir = storage_path('app/media');
+        $checks[] = [
+            'name' => 'storage/app/media (dossier)',
+            'path' => $mediaDir,
+            'exists' => is_dir($mediaDir),
+            'is_link' => false,
+            'target' => null,
+        ];
+        return $checks;
+    }
+
+    /**
+     * Versions PHP, Laravel, etc.
+     */
+    private function getVersions(): array
+    {
+        $versions = [
+            'php' => PHP_VERSION,
+            'laravel' => \Illuminate\Foundation\Application::VERSION,
+        ];
+        if (extension_loaded('pdo_mysql')) {
+            try {
+                $v = DB::selectOne('SELECT VERSION() as v');
+                $versions['mysql'] = $v->v ?? 'N/A';
+            } catch (\Throwable $e) {
+                $versions['mysql'] = 'N/A';
+            }
+        } else {
+            $versions['mysql'] = 'N/A';
+        }
+        return $versions;
     }
 
     /**
