@@ -187,10 +187,19 @@
     }
     function loadStatus(){
         showLoading(true);
-        fetch(statusUrl).then(function(r){ return r.json(); }).then(function(data){
+        fetch(statusUrl, { method: 'GET', headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function(r){
+                var ct = r.headers.get('content-type') || '';
+                if (!ct.includes('application/json')) {
+                    return r.text().then(function(text){ throw new Error('Le serveur a renvoyé du HTML (code ' + r.status + '). Vérifiez l\'URL ou les logs Laravel.'); });
+                }
+                return r.json();
+            })
+            .then(function(data){
             showLoading(false);
-            if(!data.success){ showError(data.error||'Erreur'); return; }
+            if(!data.success){ showError(data.error||'Erreur'); document.getElementById('content').classList.add('d-none'); return; }
             var d=data.data;
+            if(!d){ showError('Données de statut vides'); return; }
             document.getElementById('lastUpdate').textContent='Mis à jour: '+(d.timestamp||'');
             
             var btnToggle = document.getElementById('btnWebTVPauseToggle');
@@ -228,7 +237,7 @@
             renderCron(d.cron_tasks);
             renderAudio(d.audio_jobs);
             renderRtmp(d.rtmp_alerts);
-        }).catch(function(err){ showLoading(false); showError('Chargement: '+err.message); });
+        }).catch(function(err){ showLoading(false); var errEl=document.getElementById('error'); errEl.textContent='Chargement: '+(err&&err.message?err.message:String(err)); errEl.classList.remove('d-none'); });
     }
     document.getElementById('btnRefresh').onclick=loadStatus;
     document.getElementById('btnRetryAll').onclick=function(){ fetch(retryAllUrl,{method:'POST',headers:headers(),body:'{}'}).then(function(r){return r.json();}).then(function(d){ alert(d.success?d.message:d.error||'Erreur'); if(d.success) loadStatus(); }).catch(function(e){ alert(e.message); }); };

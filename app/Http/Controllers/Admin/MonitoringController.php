@@ -20,24 +20,25 @@ class MonitoringController extends Controller
     }
 
     /**
-     * API : Récupère le statut de tous les services
+     * API : Récupère le statut de tous les services.
+     * Chaque section est récupérée indépendamment : une section en échec ne bloque pas les autres.
      */
     public function getStatus(): JsonResponse
     {
         try {
             $status = [
-                'services' => $this->checkServices(),
-                'workers' => $this->checkWorkers(),
-                'jobs' => $this->checkJobs(),
-                'service_descriptions' => $this->getServiceDescriptions(),
-                'cron_tasks' => $this->getCronTasks(),
-                'audio_jobs' => $this->getAudioJobs(),
-                'rtmp_alerts' => $this->getRtmpAlerts(),
-                'disk' => $this->getDiskSpace(),
-                'laravel_log_errors' => $this->getLaravelLogErrors(),
-                'storage_links' => $this->getStorageLinksStatus(),
-                'versions' => $this->getVersions(),
-                'webtv_system_paused' => \Illuminate\Support\Facades\Cache::get('webtv_system_paused', false),
+                'services' => $this->safeSection([$this, 'checkServices'], []),
+                'workers' => $this->safeSection([$this, 'checkWorkers'], []),
+                'jobs' => $this->safeSection([$this, 'checkJobs'], ['pending' => 0, 'failed' => 0, 'recent_failed' => []]),
+                'service_descriptions' => $this->safeSection([$this, 'getServiceDescriptions'], []),
+                'cron_tasks' => $this->safeSection([$this, 'getCronTasks'], []),
+                'audio_jobs' => $this->safeSection([$this, 'getAudioJobs'], []),
+                'rtmp_alerts' => $this->safeSection([$this, 'getRtmpAlerts'], []),
+                'disk' => $this->safeSection([$this, 'getDiskSpace'], []),
+                'laravel_log_errors' => $this->safeSection([$this, 'getLaravelLogErrors'], ['lines' => [], 'error' => 'Indisponible']),
+                'storage_links' => $this->safeSection([$this, 'getStorageLinksStatus'], []),
+                'versions' => $this->safeSection([$this, 'getVersions'], ['php' => 'N/A', 'laravel' => 'N/A', 'mysql' => 'N/A']),
+                'webtv_system_paused' => $this->safeSection(function () { return \Illuminate\Support\Facades\Cache::get('webtv_system_paused', false); }, false),
                 'timestamp' => now()->toIso8601String(),
             ];
 
@@ -45,12 +46,25 @@ class MonitoringController extends Controller
                 'success' => true,
                 'data' => $status,
             ]);
-        } catch (\Exception $e) {
-            Log::error('Erreur monitoring status: ' . $e->getMessage());
+        } catch (\Throwable $e) {
+            Log::error('Erreur monitoring getStatus: ' . $e->getMessage(), ['trace' => $e->getTraceAsString()]);
             return response()->json([
                 'success' => false,
-                'error' => 'Erreur lors de la récupération du statut',
+                'error' => 'Erreur serveur: ' . $e->getMessage(),
             ], 500);
+        }
+    }
+
+    /**
+     * Exécute un callable et retourne la valeur par défaut en cas d'exception (log l'erreur).
+     */
+    private function safeSection(callable $fn, $default)
+    {
+        try {
+            return $fn();
+        } catch (\Throwable $e) {
+            Log::warning('Monitoring section error: ' . $e->getMessage(), ['section' => 'getStatus']);
+            return $default;
         }
     }
 
@@ -459,7 +473,8 @@ class MonitoringController extends Controller
     }
 
     /**
-     * Dernières lignes d'erreur du log Laravel (niveau ERROR uniquement, hors messages résolus)
+     * Dernières lignes d'erreur du log Laravel (niveau ERROR uniquement, hors messages résolus).
+     * Lit uniquement la fin du fichier pour éviter d'épuiser la mémoire (pas de file_get_contents sur un gros log).
      */
     private function getLaravelLogErrors(int $limit = 15): array
     {
@@ -467,8 +482,11 @@ class MonitoringController extends Controller
         if (!is_file($logPath) || !is_readable($logPath)) {
             return ['lines' => [], 'error' => 'Fichier log inaccessible'];
         }
-        $content = @file_get_contents($logPath);
-        if ($content === false) {
+        // Lire au plus les 2000 dernières lignes (évite de charger un log de plusieurs centaines de Mo)
+        $maxLines = 2000;
+        $cmd = sprintf('tail -n %d %s 2>/dev/null', $maxLines, escapeshellarg($logPath));
+        $content = @shell_exec($cmd);
+        if ($content === null || $content === '') {
             return ['lines' => [], 'error' => 'Impossible de lire le log'];
         }
         $lines = array_filter(explode("\n", $content));
