@@ -19,6 +19,43 @@ class MonitoringController extends Controller
         return view('admin.monitoring');
     }
 
+    public function showLogin(Request $request)
+    {
+        if ($request->session()->get('monitoring_authenticated') === true) {
+            return redirect()->route('system-monitoring.index');
+        }
+
+        return view('admin.monitoring-login');
+    }
+
+    public function login(Request $request)
+    {
+        $configuredPassword = config('monitoring.password');
+
+        if (!$configuredPassword) {
+            return back()->withErrors([
+                'password' => 'Mot de passe monitoring non configuré sur le serveur.',
+            ]);
+        }
+
+        if (!hash_equals($configuredPassword, (string) $request->input('password', ''))) {
+            return back()->withErrors([
+                'password' => 'Mot de passe incorrect.',
+            ]);
+        }
+
+        $request->session()->put('monitoring_authenticated', true);
+
+        return redirect()->route('system-monitoring.index');
+    }
+
+    public function logout(Request $request)
+    {
+        $request->session()->forget('monitoring_authenticated');
+
+        return redirect()->route('system-monitoring.login');
+    }
+
     /**
      * API : Récupère le statut de tous les services.
      * Chaque section est récupérée indépendamment : une section en échec ne bloque pas les autres.

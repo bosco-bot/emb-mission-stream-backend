@@ -17,6 +17,8 @@
         .table td,.table th{border-color:#e2e8f0}
         .table-hover tbody tr:hover{background:#f1f5f9}
         .refresh-info{font-size:.875rem;color:#64748b}
+        #btnRefresh.refreshing i{animation:spin .8s linear}
+        @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
     </style>
 </head>
 <body>
@@ -29,6 +31,10 @@
             </button>
             <span class="refresh-info" id="lastUpdate">—</span>
             <button type="button" class="btn btn-outline-secondary btn-sm" id="btnRefresh"><i class="fas fa-sync-alt"></i> Rafraîchir</button>
+            <form method="POST" action="{{ route('system-monitoring.logout') }}" class="d-inline">
+                @csrf
+                <button type="submit" class="btn btn-outline-danger btn-sm"><i class="fas fa-sign-out-alt"></i> Déconnexion</button>
+            </form>
         </div>
     </div>
     <div id="loading" class="text-center py-5">
@@ -123,6 +129,12 @@
     var serviceToSystemd = {'nginx':'nginx','php-fpm':'php8.2-fpm','mysql':'mysql','antmedia':'antmedia','ffmpeg-live-transcode':'ffmpeg-live-transcode','supervisor':'supervisor','cron':'cron','docker':'docker','queue-worker':'laravel-queue-worker','unified-stream':'unified-stream','reverb':'laravel-reverb'};
     function headers(){ return {'Content-Type':'application/json','Accept':'application/json','X-CSRF-TOKEN':csrf,'X-Requested-With':'XMLHttpRequest'}; }
     function showLoading(s){ document.getElementById('loading').classList.toggle('d-none',!s); document.getElementById('content').classList.toggle('d-none',s); document.getElementById('error').classList.add('d-none'); }
+    function setRefreshing(silent){
+        var btn=document.getElementById('btnRefresh');
+        if(!silent){ btn.classList.remove('refreshing'); return; }
+        btn.classList.toggle('refreshing',true);
+        setTimeout(function(){ btn.classList.remove('refreshing'); }, 800);
+    }
     function showError(m){ document.getElementById('error').textContent=m; document.getElementById('error').classList.remove('d-none'); }
     function esc(s){ var d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
     function renderServices(svc,desc){
@@ -185,10 +197,55 @@
         if(!lines.length){ el.innerHTML='<li class="text-success">Aucune erreur récente.</li>'; return; }
         el.innerHTML=lines.map(function(l){ return '<li class="mb-1 text-danger" title="'+esc(l.text)+'">'+esc(l.text)+'</li>'; }).join('');
     }
-    function loadStatus(){
-        showLoading(true);
+    function renderStatusData(d){
+        document.getElementById('lastUpdate').textContent='Mis à jour: '+(d.timestamp||'');
+
+        var btnToggle = document.getElementById('btnWebTVPauseToggle');
+        btnToggle.classList.remove('d-none');
+        if (d.webtv_system_paused) {
+            btnToggle.className = 'btn btn-sm btn-success';
+            btnToggle.innerHTML = '<i class="fas fa-play"></i> Reprendre WebTV';
+            btnToggle.onclick = function() {
+                if(!confirm('Êtes-vous sûr de vouloir reprendre la diffusion WebTV ?')) return;
+                btnToggle.disabled = true;
+                fetch('/api/webtv-auto-playlist/resume', {method:'POST', headers:headers()})
+                    .then(r => r.json()).then(res => { btnToggle.disabled=false; alert(res.message||'OK'); loadStatus(); })
+                    .catch(e => { btnToggle.disabled=false; alert(e.message); });
+            };
+        } else {
+            btnToggle.className = 'btn btn-sm btn-danger';
+            btnToggle.innerHTML = '<i class="fas fa-pause"></i> Suspendre WebTV';
+            btnToggle.onclick = function() {
+                if(!confirm('Êtes-vous sûr de vouloir suspendre la diffusion WebTV ? (Coupure du direct et VOD)')) return;
+                btnToggle.disabled = true;
+                fetch('/api/webtv-auto-playlist/stop', {method:'POST', headers:headers()})
+                    .then(r => r.json()).then(res => { btnToggle.disabled=false; alert(res.message||'OK'); loadStatus(); })
+                    .catch(e => { btnToggle.disabled=false; alert(e.message); });
+            };
+        }
+
+        renderServices(d.services||{},d.service_descriptions||{});
+        renderWorkers(d.workers||{},d.service_descriptions||{});
+        renderDisk(d.disk);
+        renderVersions(d.versions);
+        renderStorageLinks(d.storage_links);
+        renderLogErrors(d.laravel_log_errors);
+        renderJobs(d.jobs||{});
+        renderCron(d.cron_tasks);
+        renderAudio(d.audio_jobs);
+        renderRtmp(d.rtmp_alerts);
+    }
+    function loadStatus(opts){
+        opts = opts || {};
+        var silent = !!opts.silent;
+        if(!silent) showLoading(true);
+        else setRefreshing(true);
         fetch(statusUrl, { method: 'GET', headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' } })
             .then(function(r){
+                if (r.status === 401) {
+                    window.location.href = '{{ route("system-monitoring.login") }}';
+                    return null;
+                }
                 var ct = r.headers.get('content-type') || '';
                 if (!ct.includes('application/json')) {
                     return r.text().then(function(text){ throw new Error('Le serveur a renvoyé du HTML (code ' + r.status + '). Vérifiez l\'URL ou les logs Laravel.'); });
@@ -196,53 +253,37 @@
                 return r.json();
             })
             .then(function(data){
-            showLoading(false);
-            if(!data.success){ showError(data.error||'Erreur'); document.getElementById('content').classList.add('d-none'); return; }
-            var d=data.data;
-            if(!d){ showError('Données de statut vides'); return; }
-            document.getElementById('lastUpdate').textContent='Mis à jour: '+(d.timestamp||'');
-            
-            var btnToggle = document.getElementById('btnWebTVPauseToggle');
-            var txtToggle = document.getElementById('webtvPauseText');
-            btnToggle.classList.remove('d-none');
-            if (d.webtv_system_paused) {
-                btnToggle.className = 'btn btn-sm btn-success';
-                btnToggle.innerHTML = '<i class="fas fa-play"></i> Reprendre WebTV';
-                btnToggle.onclick = function() {
-                    if(!confirm('Êtes-vous sûr de vouloir reprendre la diffusion WebTV ?')) return;
-                    btnToggle.disabled = true;
-                    fetch('/api/webtv-auto-playlist/resume', {method:'POST', headers:headers()})
-                        .then(r => r.json()).then(res => { btnToggle.disabled=false; alert(res.message||'OK'); loadStatus(); })
-                        .catch(e => { btnToggle.disabled=false; alert(e.message); });
-                };
-            } else {
-                btnToggle.className = 'btn btn-sm btn-danger';
-                btnToggle.innerHTML = '<i class="fas fa-pause"></i> Suspendre WebTV';
-                btnToggle.onclick = function() {
-                    if(!confirm('Êtes-vous sûr de vouloir suspendre la diffusion WebTV ? (Coupure du direct et VOD)')) return;
-                    btnToggle.disabled = true;
-                    fetch('/api/webtv-auto-playlist/stop', {method:'POST', headers:headers()})
-                        .then(r => r.json()).then(res => { btnToggle.disabled=false; alert(res.message||'OK'); loadStatus(); })
-                        .catch(e => { btnToggle.disabled=false; alert(e.message); });
-                };
+            if (!data) return;
+            if(!silent) showLoading(false);
+            if(!data.success){
+                if(!silent){ showError(data.error||'Erreur'); document.getElementById('content').classList.add('d-none'); }
+                return;
             }
-
-            renderServices(d.services||{},d.service_descriptions||{});
-            renderWorkers(d.workers||{},d.service_descriptions||{});
-            renderDisk(d.disk);
-            renderVersions(d.versions);
-            renderStorageLinks(d.storage_links);
-            renderLogErrors(d.laravel_log_errors);
-            renderJobs(d.jobs||{});
-            renderCron(d.cron_tasks);
-            renderAudio(d.audio_jobs);
-            renderRtmp(d.rtmp_alerts);
-        }).catch(function(err){ showLoading(false); var errEl=document.getElementById('error'); errEl.textContent='Chargement: '+(err&&err.message?err.message:String(err)); errEl.classList.remove('d-none'); });
+            var d=data.data;
+            if(!d){
+                if(!silent) showError('Données de statut vides');
+                return;
+            }
+            document.getElementById('content').classList.remove('d-none');
+            renderStatusData(d);
+        }).catch(function(err){
+            if(!silent){
+                showLoading(false);
+                var errEl=document.getElementById('error');
+                errEl.textContent='Chargement: '+(err&&err.message?err.message:String(err));
+                errEl.classList.remove('d-none');
+            } else if (err && err.message && err.message.includes('401')) {
+                window.location.href = '{{ route("system-monitoring.login") }}';
+            }
+        });
     }
-    document.getElementById('btnRefresh').onclick=loadStatus;
+    document.getElementById('btnRefresh').onclick=function(){ loadStatus(); };
     document.getElementById('btnRetryAll').onclick=function(){ fetch(retryAllUrl,{method:'POST',headers:headers(),body:'{}'}).then(function(r){return r.json();}).then(function(d){ alert(d.success?d.message:d.error||'Erreur'); if(d.success) loadStatus(); }).catch(function(e){ alert(e.message); }); };
     loadStatus();
-    setInterval(loadStatus,30000);
+    setInterval(function(){
+        if(document.hidden) return;
+        loadStatus({ silent: true });
+    }, 30000);
 })();
 </script>
 </body>

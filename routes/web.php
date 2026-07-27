@@ -140,12 +140,18 @@ Route::get('/playlist.m3u', function () {
 Route::get("/api/stream/unified.m3u8", [App\Http\Controllers\Api\UnifiedStreamController::class, "getUnifiedHLS"]);
 Route::options("/api/stream/unified.m3u8", [App\Http\Controllers\Api\UnifiedStreamController::class, "options"]);
 
-// 📊 ROUTES MONITORING (Accessibles publiquement comme /watch)
+// 📊 ROUTES MONITORING
 Route::prefix('system-monitoring')->group(function () {
-    Route::get('/', [App\Http\Controllers\Admin\MonitoringController::class, 'index'])->name('system-monitoring.index');
-    Route::get('/status', [App\Http\Controllers\Admin\MonitoringController::class, 'getStatus'])->name('system-monitoring.status');
-    Route::post('/restart-service', [App\Http\Controllers\Admin\MonitoringController::class, 'restartService'])->name('system-monitoring.restart-service');
-    Route::post('/stop-service', [App\Http\Controllers\Admin\MonitoringController::class, 'stopService'])->name('system-monitoring.stop-service');
-    Route::post('/retry-job', [App\Http\Controllers\Admin\MonitoringController::class, 'retryJob'])->name('system-monitoring.retry-job');
-    Route::post('/retry-all-jobs', [App\Http\Controllers\Admin\MonitoringController::class, 'retryAllFailedJobs'])->name('system-monitoring.retry-all-jobs');
+    Route::get('/login', [App\Http\Controllers\Admin\MonitoringController::class, 'showLogin'])->name('system-monitoring.login');
+    Route::post('/login', [App\Http\Controllers\Admin\MonitoringController::class, 'login'])->name('system-monitoring.login.post');
+
+    Route::middleware('monitoring.auth')->group(function () {
+        Route::get('/', [App\Http\Controllers\Admin\MonitoringController::class, 'index'])->name('system-monitoring.index');
+        Route::get('/status', [App\Http\Controllers\Admin\MonitoringController::class, 'getStatus'])->name('system-monitoring.status');
+        Route::post('/restart-service', [App\Http\Controllers\Admin\MonitoringController::class, 'restartService'])->name('system-monitoring.restart-service');
+        Route::post('/stop-service', [App\Http\Controllers\Admin\MonitoringController::class, 'stopService'])->name('system-monitoring.stop-service');
+        Route::post('/retry-job', [App\Http\Controllers\Admin\MonitoringController::class, 'retryJob'])->name('system-monitoring.retry-job');
+        Route::post('/retry-all-jobs', [App\Http\Controllers\Admin\MonitoringController::class, 'retryAllFailedJobs'])->name('system-monitoring.retry-all-jobs');
+        Route::post('/logout', [App\Http\Controllers\Admin\MonitoringController::class, 'logout'])->name('system-monitoring.logout');
+    });
 });
