@@ -2,6 +2,7 @@
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\Api\AdminNotificationController;
 use App\Http\Controllers\Api\RegisterController;
 use App\Http\Controllers\Api\LiveStatusController;
 use App\Http\Controllers\Api\RadioStreamController;
@@ -77,6 +78,8 @@ Route::controller(RegisterController::class)->group(function() {
 // Routes protégées par authentification
 Route::middleware('auth:sanctum')->group(function () {
     Route::post('logout', [RegisterController::class, 'logout']);
+    Route::get('/admin/notifications', [AdminNotificationController::class, 'index']);
+    Route::post('/admin/notifications/{notification}/read', [AdminNotificationController::class, 'markRead']);
 });
 
 // Routes pour les sources radio
